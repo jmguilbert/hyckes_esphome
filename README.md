@@ -1,4 +1,4 @@
-Attention projet non fonctionnel. é cours de développement.
+Attention projet non fonctionnel. En cours de développement.
 
 # Alpicool Fridge ESPHome Component
 
