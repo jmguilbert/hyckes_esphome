@@ -241,58 +241,58 @@ void AlpicoolDevice::send_power(bool state) {
 
   ESP_LOGI(TAG, "Sending power command: %s", state ? "ON" : "OFF");
 
-  // Récupérer la trame de base depuis la dernière réponse du frigo
-  // On va construire une trame complète avec le bon format
-  uint8_t cmd[37];  // Taille totale de la trame de votre capture
+  // On reprend la trame complète de votre capture à 6°C
+  // et on modifie seulement l'octet 5 (ON/OFF)
+  uint8_t cmd[37];  // 37 octets au total (2 préambule + 1 len + 34 payload + 2 checksum)
 
-  // En-tête (identique à votre capture)
-  cmd[0] = PREAMBLE_1;   // 0xFE
-  cmd[1] = PREAMBLE_2;   // 0xFE
-  cmd[2] = 0x21;         // Longueur totale (33 octets de payload)
-  cmd[3] = 0x02;         // Commande SET
+  // En-tête
+  cmd[0] = 0xFE;   // Préambule 1
+  cmd[1] = 0xFE;   // Préambule 2
+  cmd[2] = 0x21;   // Longueur (33 octets de payload)
+  cmd[3] = 0x02;   // Commande SET
 
-  // Payload - on reprend les valeurs de votre capture à 8°C
-  // et on modifie seulement l'octet ON/OFF (le 6ème octet)
-  cmd[4] = 0x01;         // FE de votre capture
-  cmd[5] = state ? 0x01 : 0x00;  // ← MODIFICATION ICI (ON=01, OFF=00)
-  cmd[6] = 0x01;         // 21 de votre capture
-  cmd[7] = 0x00;         // 01 de votre capture
-  cmd[8] = 0x00;         // 00 (température - ne pas modifier)
-  cmd[9] = 0x01;         // 01 de votre capture
-  cmd[10] = 0x00;        // 00 de votre capture
-  cmd[11] = 0x00;        // 00 de votre capture
-  cmd[12] = 0x06;        // 06 de votre capture
-  cmd[13] = 0x08;        // 08 de votre capture
-  cmd[14] = 0x00;        // 00 de votre capture
-  cmd[15] = 0x02;        // 02 de votre capture
-  cmd[16] = 0x00;        // 00 de votre capture
-  cmd[17] = 0x00;        // 00 de votre capture
+  // ==== PAYLOAD (33 octets) =====
+  // Copié directement de votre capture "ON" à 6°C
+  // On modifie seulement l'octet 5 pour ON/OFF
+  cmd[4] = 0x00;   // Octet 0
+  cmd[5] = state ? 0x01 : 0x00;  // ← ON=01, OFF=00 (modification)
+  cmd[6] = 0x01;   // Octet 2
+  cmd[7] = 0x00;   // Octet 3
+  cmd[8] = 0x06;   // Octet 4 : température (6°C)
+  cmd[9] = 0x08;   // Octet 5
+  cmd[10] = 0x00;  // Octet 6
+  cmd[11] = 0x02;  // Octet 7
+  cmd[12] = 0x00;  // Octet 8
+  cmd[13] = 0x00;  // Octet 9
+  cmd[14] = 0x00;  // Octet 10
+  cmd[15] = 0x00;  // Octet 11
+  cmd[16] = 0xFE;  // Octet 12
+  cmd[17] = 0x00;  // Octet 13
+  cmd[18] = 0x1B;  // Octet 14
+  cmd[19] = 0x40;  // Octet 15
+  cmd[20] = 0x0B;  // Octet 16
+  cmd[21] = 0x05;  // Octet 17
+  cmd[22] = 0xF3;  // Octet 18 (attention : 0xF3 dans vos captures SET)
+  cmd[23] = 0xF4;  // Octet 19
+  cmd[24] = 0xEC;  // Octet 20
+  cmd[25] = 0x00;  // Octet 21
+  cmd[26] = 0x00;  // Octet 22
+  cmd[27] = 0x00;  // Octet 23
+  cmd[28] = 0x00;  // Octet 24
+  cmd[29] = 0x00;  // Octet 25
+  cmd[30] = 0x17;  // Octet 26
+  cmd[31] = 0x00;  // Octet 27
+  cmd[32] = 0x03;  // Octet 28
+  cmd[33] = 0x00;  // Octet 29
+  cmd[34] = 0x06;  // Octet 30
 
-  cmd[18] = 0x00;        // FE de votre capture
-  cmd[19] = 0x00;        // 00 de votre capture
-  cmd[20] = 0x0C;        // 0C de votre capture
-  cmd[21] = 0x50;        // 50 de votre capture
-  cmd[22] = 0x0B;        // 0B de votre capture
-  cmd[23] = 0x05;        // 05 de votre capture
-  cmd[24] = 0xF0;        // F0 de votre capture
-  cmd[25] = 0xF4;        // F4 de votre capture
-  cmd[26] = 0xEC;        // EC de votre capture
-  cmd[27] = 0x00;        // 00 de votre capture
-  cmd[28] = 0x00;        // 00 de votre capture
-  cmd[29] = 0x00;        // 00 de votre capture
-  cmd[30] = 0x00;        // 00 de votre capture
-  cmd[31] = 0xF5;        // F5 de votre capture
-  cmd[32] = 0x00;        // 00 de votre capture
-  cmd[33] = 0x03;        // 03 de votre capture
-  cmd[34] = 0x00;        // 00 de votre capture
-  cmd[35] = 0x07;        // 07 de votre capture
+  // Calcul du checksum sur tous les octets précédents (35 octets)
+  uint16_t checksum = this->calculate_checksum_(cmd, 35);
+  cmd[35] = (checksum >> 8) & 0xFF;
+  cmd[36] = checksum & 0xFF;
 
-  // Calcul du checksum sur tous les octets précédents (36 octets)
-  uint16_t checksum = this->calculate_checksum_(cmd, 36);
-  cmd[36] = (checksum >> 8) & 0xFF;
-  cmd[37] = checksum & 0xFF;
-
-  this->send_command_(cmd, 38);
+  ESP_LOGI(TAG, "Sending: %s", hex_str(cmd, 37).c_str());
+  this->send_command_(cmd, 37);
 }
 // ============================================================
 //  FIN DE LA MODIFICATION
