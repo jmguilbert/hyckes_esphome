@@ -153,7 +153,7 @@ class AlpicoolDevice : public PollingComponent, public ble_client::BLEClientNode
   espbt::ESPBTUUID service_uuid_ =
       espbt::ESPBTUUID::from_raw("00001234-0000-1000-8000-00805f9b34fb");
   espbt::ESPBTUUID write_char_uuid_ =
-      espbt::ESPBTUUID::from_raw("00001235-0000-1000-8000-00805f9b34fb");
+      espbt::ESPBTUUID::from_raw("00001237-0000-1000-8000-00805f9b34fb");
   espbt::ESPBTUUID notify_char_uuid_ =
       espbt::ESPBTUUID::from_raw("00001236-0000-1000-8000-00805f9b34fb");
 };
