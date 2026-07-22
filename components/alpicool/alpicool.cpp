@@ -230,6 +230,74 @@ void AlpicoolDevice::send_status_request_() {
   this->send_command_(cmd, sizeof(cmd));
 }
 
+// ============================================================
+//  FONCTION MODIFIÉE POUR LE ON/OFF
+// ============================================================
+void AlpicoolDevice::send_power(bool state) {
+  if (!this->has_settings_) {
+    ESP_LOGW(TAG, "No settings received yet, cannot change power state");
+    return;
+  }
+
+  ESP_LOGI(TAG, "Sending power command: %s", state ? "ON" : "OFF");
+
+  // Récupérer la trame de base depuis la dernière réponse du frigo
+  // On va construire une trame complète avec le bon format
+  uint8_t cmd[37];  // Taille totale de la trame de votre capture
+
+  // En-tête (identique à votre capture)
+  cmd[0] = PREAMBLE_1;   // 0xFE
+  cmd[1] = PREAMBLE_2;   // 0xFE
+  cmd[2] = 0x21;         // Longueur totale (33 octets de payload)
+  cmd[3] = 0x02;         // Commande SET
+
+  // Payload - on reprend les valeurs de votre capture à 8°C
+  // et on modifie seulement l'octet ON/OFF (le 6ème octet)
+  cmd[4] = 0x01;         // FE de votre capture
+  cmd[5] = state ? 0x01 : 0x00;  // ← MODIFICATION ICI (ON=01, OFF=00)
+  cmd[6] = 0x01;         // 21 de votre capture
+  cmd[7] = 0x00;         // 01 de votre capture
+  cmd[8] = 0x00;         // 00 (température - ne pas modifier)
+  cmd[9] = 0x01;         // 01 de votre capture
+  cmd[10] = 0x00;        // 00 de votre capture
+  cmd[11] = 0x00;        // 00 de votre capture
+  cmd[12] = 0x06;        // 06 de votre capture
+  cmd[13] = 0x08;        // 08 de votre capture
+  cmd[14] = 0x00;        // 00 de votre capture
+  cmd[15] = 0x02;        // 02 de votre capture
+  cmd[16] = 0x00;        // 00 de votre capture
+  cmd[17] = 0x00;        // 00 de votre capture
+
+  cmd[18] = 0x00;        // FE de votre capture
+  cmd[19] = 0x00;        // 00 de votre capture
+  cmd[20] = 0x0C;        // 0C de votre capture
+  cmd[21] = 0x50;        // 50 de votre capture
+  cmd[22] = 0x0B;        // 0B de votre capture
+  cmd[23] = 0x05;        // 05 de votre capture
+  cmd[24] = 0xF0;        // F0 de votre capture
+  cmd[25] = 0xF4;        // F4 de votre capture
+  cmd[26] = 0xEC;        // EC de votre capture
+  cmd[27] = 0x00;        // 00 de votre capture
+  cmd[28] = 0x00;        // 00 de votre capture
+  cmd[29] = 0x00;        // 00 de votre capture
+  cmd[30] = 0x00;        // 00 de votre capture
+  cmd[31] = 0xF5;        // F5 de votre capture
+  cmd[32] = 0x00;        // 00 de votre capture
+  cmd[33] = 0x03;        // 03 de votre capture
+  cmd[34] = 0x00;        // 00 de votre capture
+  cmd[35] = 0x07;        // 07 de votre capture
+
+  // Calcul du checksum sur tous les octets précédents (36 octets)
+  uint16_t checksum = this->calculate_checksum_(cmd, 36);
+  cmd[36] = (checksum >> 8) & 0xFF;
+  cmd[37] = checksum & 0xFF;
+
+  this->send_command_(cmd, 38);
+}
+// ============================================================
+//  FIN DE LA MODIFICATION
+// ============================================================
+
 void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {
   uint8_t cmd[] = {PREAMBLE_1, PREAMBLE_2, 0x04, cmd_code, static_cast<uint8_t>(temp), 0x00, 0x00};
   uint16_t checksum = this->calculate_checksum_(cmd, 5);
@@ -344,15 +412,6 @@ uint16_t AlpicoolDevice::calculate_checksum_(const uint8_t *data, uint16_t len) 
 void AlpicoolDevice::publish_connected_(bool connected) {
   if (this->connected_sensor_ != nullptr)
     this->connected_sensor_->publish_state(connected);
-}
-
-void AlpicoolDevice::send_power(bool state) {
-  if (!this->has_settings_) {
-    ESP_LOGW(TAG, "No settings received yet, cannot change power state");
-    return;
-  }
-  this->last_settings_.on = state;
-  this->send_set_state_();
 }
 
 void AlpicoolDevice::send_eco(bool state) {
