@@ -88,8 +88,8 @@ captive_portal:
 external_components:
   - source:
       type: git
-      url: https://github.com/jakub-hajek/alpicool_esphome
-      ref: main
+      url: https://github.com/jmguilbert/hyckes_esphome
+      ref: master
     components: [alpicool]
 
 esp32_ble_tracker:
