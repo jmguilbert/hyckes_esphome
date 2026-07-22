@@ -91,6 +91,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     case ESP_GATTC_NOTIFY_EVT: {
       if (param->notify.handle != this->notify_handle_)
         break;
+      ESP_LOGD(TAG, "Received notification, len=%d", param->notify.value_len);
       this->parse_status_response_(param->notify.value, param->notify.value_len);
       break;
     }
@@ -98,6 +99,8 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     case ESP_GATTC_WRITE_CHAR_EVT: {
       if (param->write.status != ESP_GATT_OK) {
         ESP_LOGW(TAG, "Write failed, status=%d", param->write.status);
+      } else {
+        ESP_LOGD(TAG, "Write successful");
       }
       break;
     }
@@ -125,8 +128,11 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
     return;
   }
 
-  if (data[3] != CMD_STATUS_REQUEST) {
-    ESP_LOGD(TAG, "Not a status response (cmd=0x%02X), ignoring", data[3]);
+  uint8_t cmd = data[3];
+  ESP_LOGD(TAG, "Response cmd=0x%02X, len=%d", cmd, len);
+
+  if (cmd != CMD_STATUS_REQUEST && cmd != CMD_SET_STATE) {
+    ESP_LOGD(TAG, "Not a status response (cmd=0x%02X), ignoring", cmd);
     return;
   }
 
@@ -141,7 +147,7 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
   // Parse left zone / global settings (offset 4..17)
   AlpicoolSettings settings;
   settings.locked = data[4];
-  settings.on = data[5];
+  settings.on = data[5];  // ← L'état ON/OFF est ici (0=OFF, 1=ON)
   settings.eco_mode = data[6];
   settings.h_lvl = static_cast<int8_t>(data[7]);
   settings.temp_set = static_cast<int8_t>(data[8]);
@@ -157,6 +163,9 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 
   this->last_settings_ = settings;
   this->has_settings_ = true;
+
+  ESP_LOGD(TAG, "State: on=%d, eco=%d, temp_set=%d, locked=%d", 
+           settings.on, settings.eco_mode, settings.temp_set, settings.locked);
 
   // Parse left zone sensors (offset 18..21)
   int8_t left_actual_temp = static_cast<int8_t>(data[18]);
@@ -231,7 +240,7 @@ void AlpicoolDevice::send_status_request_() {
 }
 
 // ============================================================
-//  FONCTION MODIFIÉE POUR LE ON/OFF
+//  FONCTION MODIFIÉE POUR LE ON/OFF (avec mise à jour de l'état local)
 // ============================================================
 void AlpicoolDevice::send_power(bool state) {
   if (!this->has_settings_) {
@@ -239,11 +248,14 @@ void AlpicoolDevice::send_power(bool state) {
     return;
   }
 
+  // IMPORTANT : Mettre à jour l'état local AVANT d'envoyer la commande
+  // Cela évite que le switch revienne en arrière si la notification tarde
+  this->last_settings_.on = state;
+  
   ESP_LOGI(TAG, "Sending power command: %s", state ? "ON" : "OFF");
 
-  // On reprend la trame complète de votre capture à 6°C
-  // et on modifie seulement l'octet 5 (ON/OFF)
-  uint8_t cmd[37];  // 37 octets au total (2 préambule + 1 len + 34 payload + 2 checksum)
+  // Construction de la trame complète (37 octets)
+  uint8_t cmd[37];
 
   // En-tête
   cmd[0] = 0xFE;   // Préambule 1
@@ -252,50 +264,56 @@ void AlpicoolDevice::send_power(bool state) {
   cmd[3] = 0x02;   // Commande SET
 
   // ==== PAYLOAD (33 octets) =====
-  // Copié directement de votre capture "ON" à 6°C
+  // Copié de votre capture ON à 6°C
   // On modifie seulement l'octet 5 pour ON/OFF
-  cmd[4] = 0x00;   // Octet 0
-  cmd[5] = state ? 0x01 : 0x00;  // ← ON=01, OFF=00 (modification)
-  cmd[6] = 0x01;   // Octet 2
-  cmd[7] = 0x00;   // Octet 3
-  cmd[8] = 0x06;   // Octet 4 : température (6°C)
-  cmd[9] = 0x08;   // Octet 5
-  cmd[10] = 0x00;  // Octet 6
-  cmd[11] = 0x02;  // Octet 7
-  cmd[12] = 0x00;  // Octet 8
-  cmd[13] = 0x00;  // Octet 9
-  cmd[14] = 0x00;  // Octet 10
-  cmd[15] = 0x00;  // Octet 11
-  cmd[16] = 0xFE;  // Octet 12
-  cmd[17] = 0x00;  // Octet 13
-  cmd[18] = 0x1B;  // Octet 14
-  cmd[19] = 0x40;  // Octet 15
-  cmd[20] = 0x0B;  // Octet 16
-  cmd[21] = 0x05;  // Octet 17
-  cmd[22] = 0xF3;  // Octet 18 (attention : 0xF3 dans vos captures SET)
-  cmd[23] = 0xF4;  // Octet 19
-  cmd[24] = 0xEC;  // Octet 20
-  cmd[25] = 0x00;  // Octet 21
-  cmd[26] = 0x00;  // Octet 22
-  cmd[27] = 0x00;  // Octet 23
-  cmd[28] = 0x00;  // Octet 24
-  cmd[29] = 0x00;  // Octet 25
-  cmd[30] = 0x17;  // Octet 26
-  cmd[31] = 0x00;  // Octet 27
-  cmd[32] = 0x03;  // Octet 28
-  cmd[33] = 0x00;  // Octet 29
-  cmd[34] = 0x06;  // Octet 30
+  cmd[4] = 0x00;   // locked
+  cmd[5] = state ? 0x01 : 0x00;  // ← ON=01, OFF=00 (MODIFICATION)
+  cmd[6] = 0x01;   // eco mode
+  cmd[7] = 0x00;   // h_lvl
+  cmd[8] = 0x06;   // temp_set (6°C)
+  cmd[9] = 0x08;   // highest_temp
+  cmd[10] = 0x00;  // lowest_temp
+  cmd[11] = 0x02;  // hysteresis
+  cmd[12] = 0x00;  // soft_start
+  cmd[13] = 0x00;  // celsius_mode
+  cmd[14] = 0x00;  // temp_comp_gte_m6
+  cmd[15] = 0x00;  // temp_comp_gte_m12
+  cmd[16] = 0xFE;  // temp_comp_lt_m12
+  cmd[17] = 0x00;  // temp_comp_shutdown
+  cmd[18] = 0x1B;  // données supplémentaires
+  cmd[19] = 0x40;  // ...
+  cmd[20] = 0x0B;
+  cmd[21] = 0x05;
+  cmd[22] = 0xF3;
+  cmd[23] = 0xF4;
+  cmd[24] = 0xEC;
+  cmd[25] = 0x00;
+  cmd[26] = 0x00;
+  cmd[27] = 0x00;
+  cmd[28] = 0x00;
+  cmd[29] = 0x00;
+  cmd[30] = 0x17;
+  cmd[31] = 0x00;
+  cmd[32] = 0x03;
+  cmd[33] = 0x00;
+  cmd[34] = 0x06;
 
   // Calcul du checksum sur tous les octets précédents (35 octets)
   uint16_t checksum = this->calculate_checksum_(cmd, 35);
   cmd[35] = (checksum >> 8) & 0xFF;
   cmd[36] = checksum & 0xFF;
 
-  ESP_LOGI(TAG, "Sending: %s", hex_str(cmd, 37).c_str());
+  // Log de la trame envoyée
+  std::string hex_str = "";
+  char buf[10];
+  for (int i = 0; i < 37; i++) {
+    sprintf(buf, " %02X", cmd[i]);
+    hex_str += buf;
+  }
+  ESP_LOGI(TAG, "Sending:%s", hex_str.c_str());
+
   this->send_command_(cmd, 37);
 }
-// ============================================================
-//  FIN DE LA MODIFICATION
 // ============================================================
 
 void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {
@@ -311,11 +329,10 @@ void AlpicoolDevice::send_set_state_() {
 
   if (this->dual_zone_detected_) {
     // Dual-zone: 0xFE 0xFE <len> 0x02 [14 left settings] [11 right settings] [checksum]
-    // Total: 2 preamble + 1 len + 1 cmd + 14 left + 11 right + 2 checksum = 31 bytes
     uint8_t cmd[31];
     cmd[0] = PREAMBLE_1;
     cmd[1] = PREAMBLE_2;
-    cmd[2] = 0x1C;  // data length: 28 bytes (cmd + 14 left + 11 right + 2 checksum)
+    cmd[2] = 0x1C;
     cmd[3] = CMD_SET_STATE;
 
     // Left zone settings (14 bytes)
@@ -337,27 +354,27 @@ void AlpicoolDevice::send_set_state_() {
     // Right zone settings (11 bytes)
     const auto &r = this->last_right_settings_;
     cmd[18] = static_cast<uint8_t>(r.temp_set);
-    cmd[19] = 0x00;  // unknown
-    cmd[20] = 0x00;  // unknown
+    cmd[19] = 0x00;
+    cmd[20] = 0x00;
     cmd[21] = static_cast<uint8_t>(r.hysteresis);
     cmd[22] = static_cast<uint8_t>(r.temp_comp_gte_m6);
     cmd[23] = static_cast<uint8_t>(r.temp_comp_gte_m12);
     cmd[24] = static_cast<uint8_t>(r.temp_comp_lt_m12);
     cmd[25] = static_cast<uint8_t>(r.temp_comp_shutdown);
-    cmd[26] = 0x00;  // unknown
-    cmd[27] = 0x00;  // unknown
-    cmd[28] = 0x00;  // unknown
+    cmd[26] = 0x00;
+    cmd[27] = 0x00;
+    cmd[28] = 0x00;
 
     uint16_t checksum = this->calculate_checksum_(cmd, 29);
     cmd[29] = (checksum >> 8) & 0xFF;
     cmd[30] = checksum & 0xFF;
     this->send_command_(cmd, sizeof(cmd));
   } else {
-    // Single-zone: 0xFE 0xFE 0x11 0x02 [14 settings] [checksum]
+    // Single-zone
     uint8_t cmd[20];
     cmd[0] = PREAMBLE_1;
     cmd[1] = PREAMBLE_2;
-    cmd[2] = 0x11;  // data length: 17 bytes
+    cmd[2] = 0x11;
     cmd[3] = CMD_SET_STATE;
     cmd[4] = s.locked ? 1 : 0;
     cmd[5] = s.on ? 1 : 0;
@@ -398,6 +415,8 @@ void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
 
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "Write failed: %d", err);
+  } else {
+    ESP_LOGD(TAG, "Write sent successfully");
   }
 }
 
