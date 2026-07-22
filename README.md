@@ -1,3 +1,5 @@
+Attention projet non fonctionnel. é cours de développement.
+
 # Alpicool Fridge ESPHome Component
 
 An ESPHome custom component for controlling Alpicool portable fridges via BLE (Bluetooth Low Energy). Integrates directly with Home Assistant through ESPHome's native API -- no MQTT broker required.
