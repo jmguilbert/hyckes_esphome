@@ -9,11 +9,11 @@ namespace alpicool {
 static const char *const TAG = "alpicool";
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Alpicool device...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device...");
 }
 
 void AlpicoolDevice::dump_config() {
-  ESP_LOGCONFIG(TAG, "Alpicool Fridge:");
+  ESP_LOGCONFIG(TAG, "Hyckes Fridge:");
   ESP_LOGCONFIG(TAG, "  Dual-zone: %s", this->dual_zone_detected_ ? "YES" : "not yet detected");
   LOG_UPDATE_INTERVAL(this);
   LOG_SENSOR("  ", "Left Current Temperature", this->left_current_temp_sensor_);
@@ -35,7 +35,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
   switch (event) {
     case ESP_GATTC_OPEN_EVT: {
       if (param->open.status == ESP_GATT_OK) {
-        ESP_LOGI(TAG, "Connected to Alpicool fridge");
+        ESP_LOGI(TAG, "Connected to Hyckes fridge");
       } else {
         ESP_LOGW(TAG, "Connection failed, status=%d", param->open.status);
         this->publish_connected_(false);
@@ -44,7 +44,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     }
 
     case ESP_GATTC_DISCONNECT_EVT: {
-      ESP_LOGW(TAG, "Disconnected from Alpicool fridge");
+      ESP_LOGW(TAG, "Disconnected from Hyckes fridge");
       this->notify_handle_ = 0;
       this->write_handle_ = 0;
       this->has_settings_ = false;
@@ -115,202 +115,100 @@ void AlpicoolDevice::update() {
 }
 
 void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
-  if (len < MIN_RESPONSE_LEN) {
-    ESP_LOGW(TAG, "Short response: %d bytes (expected >= %d)", len, MIN_RESPONSE_LEN);
+  // Le Hyckes utilise des trames de 36 octets
+  if (len != 36) {
+    ESP_LOGW(TAG, "Unexpected response length: %d bytes (expected 36 for Hyckes)", len);
     return;
   }
 
-  if (data[0] != PREAMBLE_1 || data[1] != PREAMBLE_2) {
+  if (data[0] != 0xFE || data[1] != 0xFE) {
     ESP_LOGW(TAG, "Invalid preamble: 0x%02X 0x%02X", data[0], data[1]);
     return;
   }
 
-  if (data[3] != CMD_STATUS_REQUEST) {
-    ESP_LOGD(TAG, "Not a status response (cmd=0x%02X), ignoring", data[3]);
+  // Vérification de la commande (0x02 = Retour d'état)
+  if (data[3] != 0x02) {
     return;
   }
 
-  // Verify checksum
-  uint16_t expected_checksum = this->calculate_checksum_(data, len - 2);
-  uint16_t received_checksum = (data[len - 2] << 8) | data[len - 1];
-  if (expected_checksum != received_checksum) {
-    ESP_LOGW(TAG, "Checksum mismatch: expected=0x%04X received=0x%04X", expected_checksum, received_checksum);
+  // Vérification du Checksum sur le 36ème octet (index 35)
+  uint8_t expected_checksum = static_cast<uint8_t>(this->calculate_checksum_(data, 35));
+  if (expected_checksum != data[35]) {
+    ESP_LOGW(TAG, "Checksum mismatch: expected=0x%02X received=0x%02X", expected_checksum, data[35]);
     return;
   }
 
-  // Parse left zone / global settings (offset 4..17)
-  AlpicoolSettings settings;
-  settings.locked = data[4];
-  settings.on = data[5];
-  settings.eco_mode = data[6];
-  settings.h_lvl = static_cast<int8_t>(data[7]);
-  settings.temp_set = static_cast<int8_t>(data[8]);
-  settings.highest_temp = static_cast<int8_t>(data[9]);
-  settings.lowest_temp = static_cast<int8_t>(data[10]);
-  settings.hysteresis = static_cast<int8_t>(data[11]);
-  settings.soft_start = static_cast<int8_t>(data[12]);
-  settings.celsius_mode = data[13];
-  settings.temp_comp_gte_m6 = static_cast<int8_t>(data[14]);
-  settings.temp_comp_gte_m12 = static_cast<int8_t>(data[15]);
-  settings.temp_comp_lt_m12 = static_cast<int8_t>(data[16]);
-  settings.temp_comp_shutdown = static_cast<int8_t>(data[17]);
+  // Décodage Hyckes
+  bool is_on = (data[5] == 0x01);
+  int8_t left_target_temp = static_cast<int8_t>(data[8]);
+  int8_t left_actual_temp = static_cast<int8_t>(data[9]);
+  int8_t right_target_temp = static_cast<int8_t>(data[22]);
+  int8_t right_actual_temp = static_cast<int8_t>(data[23]);
 
-  this->last_settings_ = settings;
+  // Sauvegarde des états pour l'envoi de commandes futures
+  this->last_settings_.on = is_on;
+  this->last_settings_.temp_set = left_target_temp;
+  this->last_right_settings_.temp_set = right_target_temp;
+  
   this->has_settings_ = true;
+  this->dual_zone_detected_ = true; // Hyfridge 85 est toujours dual-zone
 
-  // Parse left zone sensors (offset 18..21)
-  int8_t left_actual_temp = static_cast<int8_t>(data[18]);
-  // data[19] = battery percent / unknown
-  int8_t voltage_whole = static_cast<int8_t>(data[20]);
-  int8_t voltage_frac = static_cast<int8_t>(data[21]);
-  float voltage = voltage_whole + 0.1f * voltage_frac;
+  // Publication des capteurs - Zone 1
+  if (this->power_switch_ != nullptr)
+    this->power_switch_->publish_state(is_on);
 
-  // Publish left zone / global values
+  if (this->left_target_temp_sensor_ != nullptr)
+    this->left_target_temp_sensor_->publish_state(left_target_temp);
+
+  if (this->left_temp_number_ != nullptr)
+    this->left_temp_number_->publish_state(left_target_temp);
+
   if (this->left_current_temp_sensor_ != nullptr)
     this->left_current_temp_sensor_->publish_state(left_actual_temp);
 
-  if (this->left_target_temp_sensor_ != nullptr)
-    this->left_target_temp_sensor_->publish_state(settings.temp_set);
+  // Publication des capteurs - Zone 2
+  if (this->right_target_temp_sensor_ != nullptr)
+    this->right_target_temp_sensor_->publish_state(right_target_temp);
 
-  if (this->voltage_sensor_ != nullptr)
-    this->voltage_sensor_->publish_state(voltage);
+  if (this->right_temp_number_ != nullptr)
+    this->right_temp_number_->publish_state(right_target_temp);
 
-  if (this->power_switch_ != nullptr)
-    this->power_switch_->publish_state(settings.on);
-
-  if (this->eco_switch_ != nullptr)
-    this->eco_switch_->publish_state(settings.eco_mode);
-
-  if (this->left_temp_number_ != nullptr)
-    this->left_temp_number_->publish_state(settings.temp_set);
-
-  // Detect and parse dual-zone extension (offsets 22..31)
-  // Dual-zone responses have at least 32 bytes before checksum
-  if (len >= DUAL_ZONE_MIN_LEN) {
-    if (!this->dual_zone_detected_) {
-      this->dual_zone_detected_ = true;
-      ESP_LOGI(TAG, "Dual-zone fridge detected (response length: %d bytes)", len);
-    }
-
-    AlpicoolRightZoneSettings right;
-    right.temp_set = static_cast<int8_t>(data[22]);
-    // data[23], data[24] = unknown
-    right.hysteresis = static_cast<int8_t>(data[25]);
-    right.temp_comp_gte_m6 = static_cast<int8_t>(data[26]);
-    right.temp_comp_gte_m12 = static_cast<int8_t>(data[27]);
-    right.temp_comp_lt_m12 = static_cast<int8_t>(data[28]);
-    right.temp_comp_shutdown = static_cast<int8_t>(data[29]);
-    int8_t right_actual_temp = static_cast<int8_t>(data[30]);
-
-    this->last_right_settings_ = right;
-
-    // Running status at offset 31
-    bool running = data[31] != 0;
-
-    // Publish right zone values
-    if (this->right_current_temp_sensor_ != nullptr)
-      this->right_current_temp_sensor_->publish_state(right_actual_temp);
-
-    if (this->right_target_temp_sensor_ != nullptr)
-      this->right_target_temp_sensor_->publish_state(right.temp_set);
-
-    if (this->right_temp_number_ != nullptr)
-      this->right_temp_number_->publish_state(right.temp_set);
-
-    if (this->running_sensor_ != nullptr)
-      this->running_sensor_->publish_state(running);
-  }
+  if (this->right_current_temp_sensor_ != nullptr)
+    this->right_current_temp_sensor_->publish_state(right_actual_temp);
 }
 
 void AlpicoolDevice::send_status_request_() {
-  uint8_t cmd[] = {PREAMBLE_1, PREAMBLE_2, 0x03, CMD_STATUS_REQUEST, 0x00, 0x00};
-  uint16_t checksum = this->calculate_checksum_(cmd, 4);
-  cmd[4] = (checksum >> 8) & 0xFF;
-  cmd[5] = checksum & 0xFF;
-  this->send_command_(cmd, sizeof(cmd));
+  // L'envoi de l'état actuel avec data[3] = 0x01 agit comme un "ping" (Affiche APP sur l'écran)
+  this->send_set_state_();
 }
 
 void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {
-  uint8_t cmd[] = {PREAMBLE_1, PREAMBLE_2, 0x04, cmd_code, static_cast<uint8_t>(temp), 0x00, 0x00};
-  uint16_t checksum = this->calculate_checksum_(cmd, 5);
-  cmd[5] = (checksum >> 8) & 0xFF;
-  cmd[6] = checksum & 0xFF;
-  this->send_command_(cmd, sizeof(cmd));
+  // Cette fonction n'est plus utilisée directement avec l'architecture Hyckes,
+  // les températures sont gérées par send_set_state_()
 }
 
 void AlpicoolDevice::send_set_state_() {
-  const auto &s = this->last_settings_;
-
-  if (this->dual_zone_detected_) {
-    // Dual-zone: 0xFE 0xFE <len> 0x02 [14 left settings] [11 right settings] [checksum]
-    // Total: 2 preamble + 1 len + 1 cmd + 14 left + 11 right + 2 checksum = 31 bytes
-    uint8_t cmd[31];
-    cmd[0] = PREAMBLE_1;
-    cmd[1] = PREAMBLE_2;
-    cmd[2] = 0x1C;  // data length: 28 bytes (cmd + 14 left + 11 right + 2 checksum)
-    cmd[3] = CMD_SET_STATE;
-
-    // Left zone settings (14 bytes)
-    cmd[4] = s.locked ? 1 : 0;
-    cmd[5] = s.on ? 1 : 0;
-    cmd[6] = s.eco_mode ? 1 : 0;
-    cmd[7] = static_cast<uint8_t>(s.h_lvl);
-    cmd[8] = static_cast<uint8_t>(s.temp_set);
-    cmd[9] = static_cast<uint8_t>(s.highest_temp);
-    cmd[10] = static_cast<uint8_t>(s.lowest_temp);
-    cmd[11] = static_cast<uint8_t>(s.hysteresis);
-    cmd[12] = static_cast<uint8_t>(s.soft_start);
-    cmd[13] = s.celsius_mode ? 1 : 0;
-    cmd[14] = static_cast<uint8_t>(s.temp_comp_gte_m6);
-    cmd[15] = static_cast<uint8_t>(s.temp_comp_gte_m12);
-    cmd[16] = static_cast<uint8_t>(s.temp_comp_lt_m12);
-    cmd[17] = static_cast<uint8_t>(s.temp_comp_shutdown);
-
-    // Right zone settings (11 bytes)
-    const auto &r = this->last_right_settings_;
-    cmd[18] = static_cast<uint8_t>(r.temp_set);
-    cmd[19] = 0x00;  // unknown
-    cmd[20] = 0x00;  // unknown
-    cmd[21] = static_cast<uint8_t>(r.hysteresis);
-    cmd[22] = static_cast<uint8_t>(r.temp_comp_gte_m6);
-    cmd[23] = static_cast<uint8_t>(r.temp_comp_gte_m12);
-    cmd[24] = static_cast<uint8_t>(r.temp_comp_lt_m12);
-    cmd[25] = static_cast<uint8_t>(r.temp_comp_shutdown);
-    cmd[26] = 0x00;  // unknown
-    cmd[27] = 0x00;  // unknown
-    cmd[28] = 0x00;  // unknown
-
-    uint16_t checksum = this->calculate_checksum_(cmd, 29);
-    cmd[29] = (checksum >> 8) & 0xFF;
-    cmd[30] = checksum & 0xFF;
-    this->send_command_(cmd, sizeof(cmd));
-  } else {
-    // Single-zone: 0xFE 0xFE 0x11 0x02 [14 settings] [checksum]
-    uint8_t cmd[20];
-    cmd[0] = PREAMBLE_1;
-    cmd[1] = PREAMBLE_2;
-    cmd[2] = 0x11;  // data length: 17 bytes
-    cmd[3] = CMD_SET_STATE;
-    cmd[4] = s.locked ? 1 : 0;
-    cmd[5] = s.on ? 1 : 0;
-    cmd[6] = s.eco_mode ? 1 : 0;
-    cmd[7] = static_cast<uint8_t>(s.h_lvl);
-    cmd[8] = static_cast<uint8_t>(s.temp_set);
-    cmd[9] = static_cast<uint8_t>(s.highest_temp);
-    cmd[10] = static_cast<uint8_t>(s.lowest_temp);
-    cmd[11] = static_cast<uint8_t>(s.hysteresis);
-    cmd[12] = static_cast<uint8_t>(s.soft_start);
-    cmd[13] = s.celsius_mode ? 1 : 0;
-    cmd[14] = static_cast<uint8_t>(s.temp_comp_gte_m6);
-    cmd[15] = static_cast<uint8_t>(s.temp_comp_gte_m12);
-    cmd[16] = static_cast<uint8_t>(s.temp_comp_lt_m12);
-    cmd[17] = static_cast<uint8_t>(s.temp_comp_shutdown);
-
-    uint16_t checksum = this->calculate_checksum_(cmd, 18);
-    cmd[18] = (checksum >> 8) & 0xFF;
-    cmd[19] = checksum & 0xFF;
-    this->send_command_(cmd, sizeof(cmd));
+  if (!this->has_settings_) {
+    ESP_LOGW(TAG, "Cannot send state: waiting for first notification from fridge");
+    return;
   }
+
+  // Trame de base capturée sur le Hyckes
+  uint8_t cmd[36] = {
+    0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
+    0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
+    0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x06, 0x00
+  };
+
+  // Injection des paramètres mis à jour
+  cmd[5] = this->last_settings_.on ? 0x01 : 0x00;
+  cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
+  cmd[22] = static_cast<uint8_t>(this->last_right_settings_.temp_set);
+
+  // Calcul du checksum sur les 35 premiers octets
+  cmd[35] = static_cast<uint8_t>(this->calculate_checksum_(cmd, 35));
+
+  this->send_command_(cmd, 36);
 }
 
 void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
@@ -334,7 +232,8 @@ void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
 }
 
 uint16_t AlpicoolDevice::calculate_checksum_(const uint8_t *data, uint16_t len) {
-  uint16_t sum = 0;
+  // Le Hyckes utilise un checksum simple sur 1 octet (addition des valeurs)
+  uint8_t sum = 0;
   for (uint16_t i = 0; i < len; i++) {
     sum += data[i];
   }
@@ -347,45 +246,28 @@ void AlpicoolDevice::publish_connected_(bool connected) {
 }
 
 void AlpicoolDevice::send_power(bool state) {
-  if (!this->has_settings_) {
-    ESP_LOGW(TAG, "No settings received yet, cannot change power state");
-    return;
-  }
+  if (!this->has_settings_) return;
   this->last_settings_.on = state;
   this->send_set_state_();
 }
 
 void AlpicoolDevice::send_eco(bool state) {
-  if (!this->has_settings_) {
-    ESP_LOGW(TAG, "No settings received yet, cannot change eco mode");
-    return;
-  }
+  if (!this->has_settings_) return;
   this->last_settings_.eco_mode = state;
-  this->send_set_state_();
+  // Pas encore mappé sur Hyckes, mais la structure est prête
+  // this->send_set_state_(); 
 }
 
 void AlpicoolDevice::send_left_target_temperature(int8_t temp) {
-  if (this->has_settings_) {
-    if (temp < this->last_settings_.lowest_temp)
-      temp = this->last_settings_.lowest_temp;
-    if (temp > this->last_settings_.highest_temp)
-      temp = this->last_settings_.highest_temp;
-  }
-  this->send_set_temperature_(CMD_SET_TEMP_LEFT, temp);
+  if (!this->has_settings_) return;
+  this->last_settings_.temp_set = temp;
+  this->send_set_state_();
 }
 
 void AlpicoolDevice::send_right_target_temperature(int8_t temp) {
-  if (!this->dual_zone_detected_) {
-    ESP_LOGW(TAG, "Right zone temperature set ignored - not a dual-zone fridge");
-    return;
-  }
-  if (this->has_settings_) {
-    if (temp < this->last_settings_.lowest_temp)
-      temp = this->last_settings_.lowest_temp;
-    if (temp > this->last_settings_.highest_temp)
-      temp = this->last_settings_.highest_temp;
-  }
-  this->send_set_temperature_(CMD_SET_TEMP_RIGHT, temp);
+  if (!this->has_settings_) return;
+  this->last_right_settings_.temp_set = temp;
+  this->send_set_state_();
 }
 
 // Switch implementations
