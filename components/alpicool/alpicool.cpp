@@ -240,6 +240,7 @@ void AlpicoolDevice::send_status_request_() {
 //  FONCTION send_power CORRIGÉE (VERSION FINALE)
 // ============================================================
 void AlpicoolDevice::send_power(bool state) {
+  ESP_LOGE(TAG, "=== send_power CALLED (state=%d) ===", state);
   if (!this->has_settings_) {
     ESP_LOGW(TAG, "No settings received yet, cannot change power state");
     return;
