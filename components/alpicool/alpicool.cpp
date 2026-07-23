@@ -234,35 +234,47 @@ void AlpicoolDevice::send_status_request_() {
 //  FONCTION send_power CORRIGÉE (VERSION FINALE)
 // ============================================================
 void AlpicoolDevice::send_power(bool state) {
-  // Mise à jour de l'état local pour le switch HA
+  // Vérifier qu'on a bien reçu l'état du frigo
+  if (!this->has_settings_) {
+    ESP_LOGW(TAG, "No settings received yet, cannot change power state");
+    return;
+  }
+
+  // Mettre à jour l'état local
   this->last_settings_.on = state;
   
-  ESP_LOGI(TAG, "Sending power command: %s (setting forced)", state ? "ON" : "OFF");
+  ESP_LOGI(TAG, "Sending power command: %s (with full state)", state ? "ON" : "OFF");
 
-  // Construire la trame complète (38 octets) sur le modèle de vos captures
+  // ============================================================
+  //  CONSTRUIRE LA TRAME SET COMPLÈTE
+  // ============================================================
   uint8_t cmd[38];
 
   // En-tête
   cmd[0] = 0xFE;
   cmd[1] = 0xFE;
-  cmd[2] = 0x21;
-  cmd[3] = 0x02;
+  cmd[2] = 0x21;  // Longueur totale (33 octets de payload)
+  cmd[3] = 0x02;  // Commande SET
 
-  // Payload (copié de votre capture OFF, seul l'octet 5 change)
-  cmd[4] = 0x00;
-  cmd[5] = state ? 0x01 : 0x00;  // ← MODIFICATION : ON=01, OFF=00
-  cmd[6] = 0x01;
-  cmd[7] = 0x00;
-  cmd[8] = 0x06;
-  cmd[9] = 0x08;
-  cmd[10] = 0x00;
-  cmd[11] = 0x02;
-  cmd[12] = 0x00;
-  cmd[13] = 0x00;
-  cmd[14] = 0x00;
-  cmd[15] = 0x00;
-  cmd[16] = 0xFE;
-  cmd[17] = 0x00;
+  // Payload : recopier l'état complet du frigo
+  // On utilise les valeurs stockées dans last_settings_
+  cmd[4] = this->last_settings_.locked ? 0x01 : 0x00;
+  cmd[5] = state ? 0x01 : 0x00;  // ← ON/OFF
+  cmd[6] = this->last_settings_.eco_mode ? 0x01 : 0x00;
+  cmd[7] = static_cast<uint8_t>(this->last_settings_.h_lvl);
+  cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
+  cmd[9] = static_cast<uint8_t>(this->last_settings_.highest_temp);
+  cmd[10] = static_cast<uint8_t>(this->last_settings_.lowest_temp);
+  cmd[11] = static_cast<uint8_t>(this->last_settings_.hysteresis);
+  cmd[12] = static_cast<uint8_t>(this->last_settings_.soft_start);
+  cmd[13] = this->last_settings_.celsius_mode ? 0x01 : 0x00;
+  cmd[14] = static_cast<uint8_t>(this->last_settings_.temp_comp_gte_m6);
+  cmd[15] = static_cast<uint8_t>(this->last_settings_.temp_comp_gte_m12);
+  cmd[16] = static_cast<uint8_t>(this->last_settings_.temp_comp_lt_m12);
+  cmd[17] = static_cast<uint8_t>(this->last_settings_.temp_comp_shutdown);
+
+  // Données supplémentaires (copiées de vos captures NRF)
+  // Ces valeurs sont fixes pour votre frigo
   cmd[18] = 0x1B;
   cmd[19] = 0x40;
   cmd[20] = 0x0B;
@@ -281,22 +293,18 @@ void AlpicoolDevice::send_power(bool state) {
   cmd[33] = 0x00;
   cmd[34] = 0x06;
 
-  // ============================================
-  //  CHECKSUM FORCÉ (copié de vos captures)
-  // ============================================
-  // ON :  ... 06 87
-  // OFF : ... 06 80
+  // Checksum (forcé selon vos captures)
   if (state) {
-    cmd[35] = 0x87;   // Checksum HI pour ON
-    cmd[36] = 0x06;   // Checksum LO (0x06 de votre capture)
-    cmd[37] = 0x00;   // L'octet final de votre capture OFF est 0x00
+    cmd[35] = 0x87;
+    cmd[36] = 0x06;
+    cmd[37] = 0x00;
   } else {
-    cmd[35] = 0x80;   // Checksum HI pour OFF
-    cmd[36] = 0x06;   // Checksum LO (0x06 de votre capture)
-    cmd[37] = 0x00;   // L'octet final de votre capture OFF est 0x00
+    cmd[35] = 0x80;
+    cmd[36] = 0x06;
+    cmd[37] = 0x00;
   }
 
-  // Log pour vérifier la trame envoyée
+  // Log de la trame
   char hex_str[120];
   sprintf(hex_str, "");
   for (int i = 0; i < 38; i++) {
@@ -304,7 +312,7 @@ void AlpicoolDevice::send_power(bool state) {
     sprintf(buf, "%02X ", cmd[i]);
     strcat(hex_str, buf);
   }
-  ESP_LOGI(TAG, "Sending: %s", hex_str);
+  ESP_LOGI(TAG, "Sending full SET frame: %s", hex_str);
 
   this->send_command_(cmd, 38);
 }
