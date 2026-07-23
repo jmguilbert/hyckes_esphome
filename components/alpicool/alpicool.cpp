@@ -186,31 +186,44 @@ void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {
   // Cette fonction n'est plus utilisée directement avec l'architecture Hyckes,
   // les températures sont gérées par send_set_state_()
 }
-
+//==============
+// modif JMG
+//=============
 void AlpicoolDevice::send_set_state_() {
   if (!this->has_settings_) {
     ESP_LOGW(TAG, "Cannot send state: waiting for first notification from fridge");
     return;
   }
 
-  // Trame de base capturée sur le Hyckes
+  // Trame de base stricte de 36 octets capturée sur le Hyckes
+  // L'octet à l'index 3 est forcé sur 0x01 (Commande d'écriture Application)
   uint8_t cmd[36] = {
     0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
     0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
     0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x06, 0x00
   };
 
-  // Injection des paramètres mis à jour
+  // Injection de l'état de l'alimentation (ON = 0x01 / OFF = 0x00) à l'index 5
   cmd[5] = this->last_settings_.on ? 0x01 : 0x00;
+
+  // Injection des températures de consigne Zone 1 (index 8) et Zone 2 (index 22)
   cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
   cmd[22] = static_cast<uint8_t>(this->last_right_settings_.temp_set);
 
   // Calcul du checksum sur les 35 premiers octets
-  cmd[35] = static_cast<uint8_t>(this->calculate_checksum_(cmd, 35));
+  uint16_t checksum_val = this->calculate_checksum_(cmd, 35);
+  // Placement du checksum au 36ème octet (index 35)
+  cmd[35] = static_cast<uint8_t>(checksum_val & 0xFF);
 
+  // Log pour confirmer la structure avant l'envoi
+  ESP_LOGI(TAG, "Sending 36-byte command frame to Hyckes");
+
+  // Envoi de la commande avec la longueur strictement fixée à 36
   this->send_command_(cmd, 36);
 }
-
+//===================
+// fin de la modif JMG
+//===================
 void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
   if (this->node_state != espbt::ClientState::ESTABLISHED) {
     ESP_LOGW(TAG, "Not connected, cannot send command");
