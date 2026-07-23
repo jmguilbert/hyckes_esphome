@@ -131,12 +131,17 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
     return;
   }
 
-  // Vérification du Checksum sur le 36ème octet (index 35)
-  uint8_t expected_checksum = static_cast<uint8_t>(this->calculate_checksum_(data, 35));
-  if (expected_checksum != data[35]) {
-    ESP_LOGW(TAG, "Checksum mismatch: expected=0x%02X received=0x%02X", expected_checksum, data[35]);
+  // Calcul du checksum sur 16 bits à partir des 34 premiers octets (index 0 à 33)
+  uint16_t expected_checksum = this->calculate_checksum_(data, 34);
+  // Reconstitution du checksum reçu (Octet 34 = High byte, Octet 35 = Low byte)
+  uint16_t received_checksum = (data[34] << 8) | data[35];
+
+  if (expected_checksum != received_checksum) {
+    ESP_LOGW(TAG, "Checksum mismatch! Expected: %04X, Received: %04X", expected_checksum, received_checksum);
     return;
   }
+  
+  ESP_LOGI(TAG, "Valid frame received! Updating sensors...");
 
   // Décodage Hyckes
   bool is_on = (data[5] == 0x01);
@@ -151,7 +156,7 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
   this->last_right_settings_.temp_set = right_target_temp;
   
   this->has_settings_ = true;
-  this->dual_zone_detected_ = true; // Hyfridge 85 est toujours dual-zone
+  this->dual_zone_detected_ = true;
 
   // Publication des capteurs - Zone 1
   if (this->power_switch_ != nullptr)
@@ -178,25 +183,23 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 }
 
 void AlpicoolDevice::send_status_request_() {
-  // On casse la boucle d'attente en envoyant une trame de prise de contact 
-  // codée en dur pour forcer le frigo à répondre (Handshake), sans vérifier has_settings_.
-  
+  // Trame de prise de contact (Handshake)
   uint8_t cmd[36] = {
     0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
     0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
-    0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x06, 0x00
+    0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
   };
 
-  // Calcul du checksum sur les 35 premiers octets pour s'assurer que la trame est valide
-  cmd[35] = static_cast<uint8_t>(this->calculate_checksum_(cmd, 35));
+  // Calcul du checksum sur les 34 premiers octets (index 0 à 33)
+  uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
+  cmd[34] = (checksum_val >> 8) & 0xFF; // High byte
+  cmd[35] = checksum_val & 0xFF;        // Low byte
 
-  // On envoie directement la commande
   this->send_command_(cmd, 36);
 }
 
 void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {
-  // Cette fonction n'est plus utilisée directement avec l'architecture Hyckes,
-  // les températures sont gérées par send_set_state_()
+  // Remplacé par send_set_state_()
 }
 
 void AlpicoolDevice::send_set_state_() {
@@ -205,29 +208,23 @@ void AlpicoolDevice::send_set_state_() {
     return;
   }
 
-  // Trame de base stricte de 36 octets capturée sur le Hyckes
   uint8_t cmd[36] = {
     0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
     0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
-    0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x06, 0x00
+    0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
   };
 
-  // Injection de l'état de l'alimentation (ON = 0x01 / OFF = 0x00) à l'index 5
+  // Injection des états cibles
   cmd[5] = this->last_settings_.on ? 0x01 : 0x00;
-
-  // Injection des températures de consigne Zone 1 (index 8) et Zone 2 (index 22)
   cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
   cmd[22] = static_cast<uint8_t>(this->last_right_settings_.temp_set);
 
-  // Calcul du checksum sur les 35 premiers octets
-  uint16_t checksum_val = this->calculate_checksum_(cmd, 35);
-  // Placement du checksum au 36ème octet (index 35)
-  cmd[35] = static_cast<uint8_t>(checksum_val & 0xFF);
+  // Calcul du checksum sur 16 bits
+  uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
+  cmd[34] = (checksum_val >> 8) & 0xFF;
+  cmd[35] = checksum_val & 0xFF;
 
-  // Log pour confirmer la structure avant l'envoi
   ESP_LOGI(TAG, "Sending 36-byte command frame to Hyckes");
-
-  // Envoi de la commande avec la longueur strictement fixée à 36
   this->send_command_(cmd, 36);
 }
 
@@ -252,8 +249,8 @@ void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
 }
 
 uint16_t AlpicoolDevice::calculate_checksum_(const uint8_t *data, uint16_t len) {
-  // Le Hyckes utilise un checksum simple sur 1 octet (addition des valeurs)
-  uint8_t sum = 0;
+  // Retour de la logique 16 bits d'origine !
+  uint16_t sum = 0;
   for (uint16_t i = 0; i < len; i++) {
     sum += data[i];
   }
@@ -274,8 +271,6 @@ void AlpicoolDevice::send_power(bool state) {
 void AlpicoolDevice::send_eco(bool state) {
   if (!this->has_settings_) return;
   this->last_settings_.eco_mode = state;
-  // Pas encore mappé sur Hyckes, mais la structure est prête
-  // this->send_set_state_(); 
 }
 
 void AlpicoolDevice::send_left_target_temperature(int8_t temp) {
