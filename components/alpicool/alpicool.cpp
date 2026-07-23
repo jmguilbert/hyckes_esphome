@@ -115,11 +115,21 @@ void AlpicoolDevice::update() {
 }
 
 void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
+  // === NOUVEAU : Gestion des réponses courtes (ACK) ===
   if (len < MIN_RESPONSE_LEN) {
+    // Vérifier si c'est une réponse à une commande SET_TEMP
+    if (len >= 4 && (data[3] == CMD_SET_TEMP_LEFT || data[3] == CMD_SET_TEMP_RIGHT)) {
+      ESP_LOGI(TAG, "Temperature set acknowledged (len=%d)", len);
+      // Mettre à jour le switch Power avec l'état actuel
+      if (this->power_switch_ != nullptr)
+        this->power_switch_->publish_state(this->last_settings_.on);
+      return;
+    }
     ESP_LOGW(TAG, "Short response: %d bytes (expected >= %d)", len, MIN_RESPONSE_LEN);
     return;
   }
 
+  // === CODE EXISTANT (inchangé) ===
   if (data[0] != PREAMBLE_1 || data[1] != PREAMBLE_2) {
     ESP_LOGW(TAG, "Invalid preamble: 0x%02X 0x%02X", data[0], data[1]);
     return;
@@ -185,7 +195,6 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
     this->left_temp_number_->publish_state(settings.temp_set);
 
   // Detect and parse dual-zone extension (offsets 22..31)
-  // Dual-zone responses have at least 32 bytes before checksum
   if (len >= DUAL_ZONE_MIN_LEN) {
     if (!this->dual_zone_detected_) {
       this->dual_zone_detected_ = true;
@@ -194,7 +203,6 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 
     AlpicoolRightZoneSettings right;
     right.temp_set = static_cast<int8_t>(data[22]);
-    // data[23], data[24] = unknown
     right.hysteresis = static_cast<int8_t>(data[25]);
     right.temp_comp_gte_m6 = static_cast<int8_t>(data[26]);
     right.temp_comp_gte_m12 = static_cast<int8_t>(data[27]);
@@ -204,10 +212,8 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 
     this->last_right_settings_ = right;
 
-    // Running status at offset 31
     bool running = data[31] != 0;
 
-    // Publish right zone values
     if (this->right_current_temp_sensor_ != nullptr)
       this->right_current_temp_sensor_->publish_state(right_actual_temp);
 
