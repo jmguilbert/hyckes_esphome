@@ -255,12 +255,16 @@ void AlpicoolDevice::send_power(bool state) {
   cmd[2] = 0x21;
   cmd[3] = 0x02;
 
-  // Utiliser les valeurs réelles du frigo
   cmd[4] = this->last_settings_.locked ? 0x01 : 0x00;
   cmd[5] = state ? 0x01 : 0x00;
   cmd[6] = this->last_settings_.eco_mode ? 0x01 : 0x00;
   cmd[7] = static_cast<uint8_t>(this->last_settings_.h_lvl);
-  cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);  // ← Température réelle
+  // === MODIFICATION : on force la température à changer ===
+  // On prend la température actuelle et on ajoute 1°C (si elle est < 20°C)
+  int8_t new_temp = this->last_settings_.temp_set + 1;
+  if (new_temp > this->last_settings_.highest_temp) new_temp = this->last_settings_.lowest_temp;
+  cmd[8] = static_cast<uint8_t>(new_temp);
+  // === FIN MODIFICATION ===
   cmd[9] = static_cast<uint8_t>(this->last_settings_.highest_temp);
   cmd[10] = static_cast<uint8_t>(this->last_settings_.lowest_temp);
   cmd[11] = static_cast<uint8_t>(this->last_settings_.hysteresis);
@@ -271,7 +275,6 @@ void AlpicoolDevice::send_power(bool state) {
   cmd[16] = static_cast<uint8_t>(this->last_settings_.temp_comp_lt_m12);
   cmd[17] = static_cast<uint8_t>(this->last_settings_.temp_comp_shutdown);
 
-  // Données fixes (copiées de vos captures)
   cmd[18] = 0x1B;
   cmd[19] = 0x40;
   cmd[20] = 0x0B;
@@ -290,23 +293,21 @@ void AlpicoolDevice::send_power(bool state) {
   cmd[33] = 0x00;
   cmd[34] = 0x06;
 
-  // Calculer le checksum (au lieu de le forcer)
   uint16_t checksum = 0;
   for (int i = 0; i < 36; i++) {
     checksum += cmd[i];
   }
   cmd[35] = (checksum >> 8) & 0xFF;
   cmd[36] = checksum & 0xFF;
-  // cmd[37] n'est pas utilisé (la trame fait 38 octets avec checksum sur 36)
+  // cmd[37] n'est pas utilisé
 
-  // Log
   char hex_str[120];
   for (int i = 0; i < 36; i++) {
     char buf[5];
     sprintf(buf, "%02X ", cmd[i]);
     strcat(hex_str, buf);
   }
-  ESP_LOGI(TAG, "Sending full SET frame (len=%d): %s", 36, hex_str);
+  ESP_LOGI(TAG, "Sending full SET frame with temp change: %s", hex_str);
 
   this->send_command_(cmd, 36);
 }
