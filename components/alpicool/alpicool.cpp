@@ -106,6 +106,38 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
       break;
   }
 }
+//=======================
+// ajout demande appairage
+//=======================
+void AlpicoolDevice::send_bind() {
+  ESP_LOGI(TAG, "Sending BIND command to display APP...");
+
+  uint8_t cmd[37] = {
+    0xFE, 0xFE, 0x21, 0x01,  // En-tête + commande QUERY
+    0x00, 0x01, 0x01, 0x00,  // Octets 4-7
+    0x03, 0x08, 0x00, 0x02,  // Octets 8-11 (température à 3°C)
+    0x00, 0x00, 0x00, 0x00,  // Octets 12-15
+    0xFE, 0x00, 0x0E, 0x30,  // Octets 16-19
+    0x0A, 0x08, 0xF4, 0xF4,  // Octets 20-23
+    0xEC, 0x00, 0x00, 0x00,  // Octets 24-27
+    0x00, 0x00, 0x05, 0x00,  // Octets 28-31
+    0x03, 0x00, 0x06, 0x57   // Octets 32-35 + checksum 0x57
+  };
+
+  // Log
+  char hex_str[120];
+  for (int i = 0; i < 37; i++) {
+    char buf[5];
+    sprintf(buf, "%02X ", cmd[i]);
+    strcat(hex_str, buf);
+  }
+  ESP_LOGI(TAG, "Sending BIND frame: %s", hex_str);
+
+  this->send_command_(cmd, 37);
+}
+// =====================
+// fin ajout apairage
+// =====================
 
 void AlpicoolDevice::update() {
   if (this->node_state != espbt::ClientState::ESTABLISHED) {
