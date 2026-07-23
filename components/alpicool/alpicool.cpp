@@ -243,10 +243,10 @@ void AlpicoolDevice::send_status_request_() {
 //  FONCTION MODIFIÉE POUR LE ON/OFF (avec mise à jour de l'état local)
 // ============================================================
 void AlpicoolDevice::send_power(bool state) {
-  if (!this->has_settings_) {
-    ESP_LOGW(TAG, "No settings received yet, cannot change power state");
-    return;
-  }
+//  if (!this->has_settings_) {
+//    ESP_LOGW(TAG, "No settings received yet, cannot change power state");
+//    return;
+//  }
 
   // Mettre à jour l'état local
   this->last_settings_.on = state;
