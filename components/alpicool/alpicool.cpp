@@ -176,10 +176,23 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
   if (this->right_current_temp_sensor_ != nullptr)
     this->right_current_temp_sensor_->publish_state(right_actual_temp);
 }
-
+//================== Modif JMG
 void AlpicoolDevice::send_status_request_() {
-  // L'envoi de l'état actuel avec data[3] = 0x01 agit comme un "ping" (Affiche APP sur l'écran)
-  this->send_set_state_();
+  // On casse la boucle d'attente en envoyant une trame de prise de contact 
+  // codée en dur pour forcer le frigo à répondre (Handshake), sans vérifier has_settings_.
+  
+  uint8_t cmd[36] = {
+    0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
+    0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
+    0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x06, 0x00
+  }
+//====================== Fin modif JMG
+
+  // Calcul du checksum sur les 35 premiers octets pour s'assurer que la trame est valide
+  cmd[35] = static_cast<uint8_t>(this->calculate_checksum_(cmd, 35));
+
+  // On envoie directement la commande
+  this->send_command_(cmd, 36);
 }
 
 void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {
