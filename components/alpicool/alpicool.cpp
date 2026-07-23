@@ -270,79 +270,107 @@ void AlpicoolDevice::send_status_request_() {
 
 // ============================================================
 //  FONCTION send_power CORRIGÉE (VERSION FINALE)
-// ============================================================
+// ≈============
 void AlpicoolDevice::send_power(bool state) {
-  ESP_LOGE(TAG, "=== send_power CALLED (state=%d) ===", state);
-  if (!this->has_settings_) {
-    ESP_LOGW(TAG, "No settings received yet, cannot change power state");
-    return;
-  }
-
+  // Mise à jour de l'état local
   this->last_settings_.on = state;
-  ESP_LOGI(TAG, "Sending power command: %s (with full state)", state ? "ON" : "OFF");
+  
+  ESP_LOGI(TAG, "Sending power command: %s (Nomadic Ark frame)", state ? "ON" : "OFF");
 
-  uint8_t cmd[38];
+  // Trame ON (Nomadic Ark) : FE FE 21 02 00 01 01 00 03 08 00 02 00 00 00 00 FE 00 0E 3C 0B 03 F4 F4 EC 00 00 00 00 00 03 00 03 00 06 5E
+  // Trame OFF (Nomadic Ark) : FE FE 21 02 00 00 01 00 03 08 00 02 00 00 00 00 FE 00 0E 2C 0A 07 F4 F4 EC 00 00 00 00 00 03 00 03 00 06 50
 
+  uint8_t cmd[37];
+
+  // En-tête (identique)
   cmd[0] = 0xFE;
   cmd[1] = 0xFE;
   cmd[2] = 0x21;
-  cmd[3] = 0x02;
+  cmd[3] = 0x02;  // SET
 
-  cmd[4] = this->last_settings_.locked ? 0x01 : 0x00;
-  cmd[5] = state ? 0x01 : 0x00;
-  cmd[6] = this->last_settings_.eco_mode ? 0x01 : 0x00;
-  cmd[7] = static_cast<uint8_t>(this->last_settings_.h_lvl);
-  // === MODIFICATION : on force la température à changer ===
-  // On prend la température actuelle et on ajoute 1°C (si elle est < 20°C)
-  int8_t new_temp = this->last_settings_.temp_set + 1;
-  if (new_temp > this->last_settings_.highest_temp) new_temp = this->last_settings_.lowest_temp;
-  cmd[8] = static_cast<uint8_t>(new_temp);
-  // === FIN MODIFICATION ===
-  cmd[9] = static_cast<uint8_t>(this->last_settings_.highest_temp);
-  cmd[10] = static_cast<uint8_t>(this->last_settings_.lowest_temp);
-  cmd[11] = static_cast<uint8_t>(this->last_settings_.hysteresis);
-  cmd[12] = static_cast<uint8_t>(this->last_settings_.soft_start);
-  cmd[13] = this->last_settings_.celsius_mode ? 0x01 : 0x00;
-  cmd[14] = static_cast<uint8_t>(this->last_settings_.temp_comp_gte_m6);
-  cmd[15] = static_cast<uint8_t>(this->last_settings_.temp_comp_gte_m12);
-  cmd[16] = static_cast<uint8_t>(this->last_settings_.temp_comp_lt_m12);
-  cmd[17] = static_cast<uint8_t>(this->last_settings_.temp_comp_shutdown);
-
-  cmd[18] = 0x1B;
-  cmd[19] = 0x40;
-  cmd[20] = 0x0B;
-  cmd[21] = 0x05;
-  cmd[22] = 0xF3;
-  cmd[23] = 0xF4;
-  cmd[24] = 0xEC;
-  cmd[25] = 0x00;
-  cmd[26] = 0x00;
-  cmd[27] = 0x00;
-  cmd[28] = 0x00;
-  cmd[29] = 0x00;
-  cmd[30] = 0x17;
-  cmd[31] = 0x00;
-  cmd[32] = 0x03;
-  cmd[33] = 0x00;
-  cmd[34] = 0x06;
-
-  uint16_t checksum = 0;
-  for (int i = 0; i < 36; i++) {
-    checksum += cmd[i];
+  // Partie variable selon ON/OFF
+  if (state) {
+    // Trame ON
+    cmd[4] = 0x00;
+    cmd[5] = 0x01;  // ON
+    cmd[6] = 0x01;
+    cmd[7] = 0x00;
+    cmd[8] = 0x03;  // Température
+    cmd[9] = 0x08;
+    cmd[10] = 0x00;
+    cmd[11] = 0x02;
+    cmd[12] = 0x00;
+    cmd[13] = 0x00;
+    cmd[14] = 0x00;
+    cmd[15] = 0x00;
+    cmd[16] = 0xFE;
+    cmd[17] = 0x00;
+    cmd[18] = 0x0E;
+    cmd[19] = 0x3C;
+    cmd[20] = 0x0B;
+    cmd[21] = 0x03;
+    cmd[22] = 0xF4;
+    cmd[23] = 0xF4;
+    cmd[24] = 0xEC;
+    cmd[25] = 0x00;
+    cmd[26] = 0x00;
+    cmd[27] = 0x00;
+    cmd[28] = 0x00;
+    cmd[29] = 0x00;
+    cmd[30] = 0x03;
+    cmd[31] = 0x00;
+    cmd[32] = 0x03;
+    cmd[33] = 0x00;
+    cmd[34] = 0x06;
+    cmd[35] = 0x5E;  // Checksum HI
+    cmd[36] = 0x00;  // Checksum LO (0x5E 00)
+  } else {
+    // Trame OFF
+    cmd[4] = 0x00;
+    cmd[5] = 0x00;  // OFF
+    cmd[6] = 0x01;
+    cmd[7] = 0x00;
+    cmd[8] = 0x03;  // Température
+    cmd[9] = 0x08;
+    cmd[10] = 0x00;
+    cmd[11] = 0x02;
+    cmd[12] = 0x00;
+    cmd[13] = 0x00;
+    cmd[14] = 0x00;
+    cmd[15] = 0x00;
+    cmd[16] = 0xFE;
+    cmd[17] = 0x00;
+    cmd[18] = 0x0E;
+    cmd[19] = 0x2C;
+    cmd[20] = 0x0A;
+    cmd[21] = 0x07;
+    cmd[22] = 0xF4;
+    cmd[23] = 0xF4;
+    cmd[24] = 0xEC;
+    cmd[25] = 0x00;
+    cmd[26] = 0x00;
+    cmd[27] = 0x00;
+    cmd[28] = 0x00;
+    cmd[29] = 0x00;
+    cmd[30] = 0x03;
+    cmd[31] = 0x00;
+    cmd[32] = 0x03;
+    cmd[33] = 0x00;
+    cmd[34] = 0x06;
+    cmd[35] = 0x50;  // Checksum HI
+    cmd[36] = 0x00;  // Checksum LO (0x50 00)
   }
-  cmd[35] = (checksum >> 8) & 0xFF;
-  cmd[36] = checksum & 0xFF;
-  // cmd[37] n'est pas utilisé
 
+  // Log
   char hex_str[120];
-  for (int i = 0; i < 36; i++) {
+  for (int i = 0; i < 37; i++) {
     char buf[5];
     sprintf(buf, "%02X ", cmd[i]);
     strcat(hex_str, buf);
   }
-  ESP_LOGI(TAG, "Sending full SET frame with temp change: %s", hex_str);
+  ESP_LOGI(TAG, "Sending frame: %s", hex_str);
 
-  this->send_command_(cmd, 36);
+  this->send_command_(cmd, 37);
 }
 // ============================================================
 // Fin de la modifications JMG "send command
