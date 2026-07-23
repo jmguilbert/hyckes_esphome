@@ -248,72 +248,46 @@ void AlpicoolDevice::send_power(bool state) {
     return;
   }
 
-  // IMPORTANT : Mettre à jour l'état local AVANT d'envoyer la commande
-  // Cela évite que le switch revienne en arrière si la notification tarde
+  // Mettre à jour l'état local
   this->last_settings_.on = state;
   
   ESP_LOGI(TAG, "Sending power command: %s", state ? "ON" : "OFF");
 
-  // Construction de la trame complète (37 octets)
-  uint8_t cmd[37];
+  // Construire la trame complète (38 octets) en reprenant votre capture
+  // On utilise la trame ON comme modèle et on ne change que l'octet d'état
+  uint8_t cmd[38] = {
+    0xFE, 0xFE, 0x21, 0x02,        // En-tête
+    0x00, 0x00, 0x01, 0x00,        // Octets 4-7
+    0x06, 0x08, 0x00, 0x02,        // Octets 8-11
+    0x00, 0x00, 0x00, 0x00,        // Octets 12-15
+    0xFE, 0x00, 0x1B, 0x40,        // Octets 16-19
+    0x0B, 0x05, 0xF3, 0xF4,        // Octets 20-23
+    0xEC, 0x00, 0x00, 0x00,        // Octets 24-27
+    0x00, 0x00, 0x17, 0x00,        // Octets 28-31
+    0x03, 0x00, 0x06               // Octets 32-34 (début du checksum)
+  };
 
-  // En-tête
-  cmd[0] = 0xFE;   // Préambule 1
-  cmd[1] = 0xFE;   // Préambule 2
-  cmd[2] = 0x21;   // Longueur (33 octets de payload)
-  cmd[3] = 0x02;   // Commande SET
+  // Modifier l'octet d'état (position 5)
+  cmd[5] = state ? 0x01 : 0x00;
 
-  // ==== PAYLOAD (33 octets) =====
-  // Copié de votre capture ON à 6°C
-  // On modifie seulement l'octet 5 pour ON/OFF
-  cmd[4] = 0x00;   // locked
-  cmd[5] = state ? 0x01 : 0x00;  // ← ON=01, OFF=00 (MODIFICATION)
-  cmd[6] = 0x01;   // eco mode
-  cmd[7] = 0x00;   // h_lvl
-  cmd[8] = 0x06;   // temp_set (6°C)
-  cmd[9] = 0x08;   // highest_temp
-  cmd[10] = 0x00;  // lowest_temp
-  cmd[11] = 0x02;  // hysteresis
-  cmd[12] = 0x00;  // soft_start
-  cmd[13] = 0x00;  // celsius_mode
-  cmd[14] = 0x00;  // temp_comp_gte_m6
-  cmd[15] = 0x00;  // temp_comp_gte_m12
-  cmd[16] = 0xFE;  // temp_comp_lt_m12
-  cmd[17] = 0x00;  // temp_comp_shutdown
-  cmd[18] = 0x1B;  // données supplémentaires
-  cmd[19] = 0x40;  // ...
-  cmd[20] = 0x0B;
-  cmd[21] = 0x05;
-  cmd[22] = 0xF3;
-  cmd[23] = 0xF4;
-  cmd[24] = 0xEC;
-  cmd[25] = 0x00;
-  cmd[26] = 0x00;
-  cmd[27] = 0x00;
-  cmd[28] = 0x00;
-  cmd[29] = 0x00;
-  cmd[30] = 0x17;
-  cmd[31] = 0x00;
-  cmd[32] = 0x03;
-  cmd[33] = 0x00;
-  cmd[34] = 0x06;
-
-  // Calcul du checksum sur tous les octets précédents (35 octets)
-  uint16_t checksum = this->calculate_checksum_(cmd, 35);
-  cmd[35] = (checksum >> 8) & 0xFF;
-  cmd[36] = checksum & 0xFF;
-
-  // Log de la trame envoyée
-  std::string hex_str = "";
-  char buf[10];
-  for (int i = 0; i < 37; i++) {
-    sprintf(buf, " %02X", cmd[i]);
-    hex_str += buf;
+  // Calculer le checksum
+  uint16_t checksum = 0;
+  for (int i = 0; i < 36; i++) {
+    checksum += cmd[i];
   }
-  ESP_LOGI(TAG, "Sending:%s", hex_str.c_str());
+  cmd[36] = (checksum >> 8) & 0xFF;
+  cmd[37] = checksum & 0xFF;
 
-  this->send_command_(cmd, 37);
+  // Log pour vérifier la trame
+  char hex_str[100];
+  for (int i = 0; i < 38; i++) {
+    sprintf(hex_str + i * 3, "%02X ", cmd[i]);
+  }
+  ESP_LOGI(TAG, "Sending: %s", hex_str);
+
+  this->send_command_(cmd, 38);
 }
+// fin de la modification
 // ============================================================
 
 void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {
