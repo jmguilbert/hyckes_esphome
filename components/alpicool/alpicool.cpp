@@ -240,35 +240,27 @@ void AlpicoolDevice::send_status_request_() {
 //  FONCTION send_power CORRIGÉE (VERSION FINALE)
 // ============================================================
 void AlpicoolDevice::send_power(bool state) {
-  // Vérifier qu'on a bien reçu l'état du frigo
   if (!this->has_settings_) {
     ESP_LOGW(TAG, "No settings received yet, cannot change power state");
     return;
   }
 
-  // Mettre à jour l'état local
   this->last_settings_.on = state;
-  
   ESP_LOGI(TAG, "Sending power command: %s (with full state)", state ? "ON" : "OFF");
 
-  // ============================================================
-  //  CONSTRUIRE LA TRAME SET COMPLÈTE
-  // ============================================================
   uint8_t cmd[38];
 
-  // En-tête
   cmd[0] = 0xFE;
   cmd[1] = 0xFE;
-  cmd[2] = 0x21;  // Longueur totale (33 octets de payload)
-  cmd[3] = 0x02;  // Commande SET
+  cmd[2] = 0x21;
+  cmd[3] = 0x02;
 
-  // Payload : recopier l'état complet du frigo
-  // On utilise les valeurs stockées dans last_settings_
+  // Utiliser les valeurs réelles du frigo
   cmd[4] = this->last_settings_.locked ? 0x01 : 0x00;
-  cmd[5] = state ? 0x01 : 0x00;  // ← ON/OFF
+  cmd[5] = state ? 0x01 : 0x00;
   cmd[6] = this->last_settings_.eco_mode ? 0x01 : 0x00;
   cmd[7] = static_cast<uint8_t>(this->last_settings_.h_lvl);
-  cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
+  cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);  // ← Température réelle
   cmd[9] = static_cast<uint8_t>(this->last_settings_.highest_temp);
   cmd[10] = static_cast<uint8_t>(this->last_settings_.lowest_temp);
   cmd[11] = static_cast<uint8_t>(this->last_settings_.hysteresis);
@@ -279,8 +271,7 @@ void AlpicoolDevice::send_power(bool state) {
   cmd[16] = static_cast<uint8_t>(this->last_settings_.temp_comp_lt_m12);
   cmd[17] = static_cast<uint8_t>(this->last_settings_.temp_comp_shutdown);
 
-  // Données supplémentaires (copiées de vos captures NRF)
-  // Ces valeurs sont fixes pour votre frigo
+  // Données fixes (copiées de vos captures)
   cmd[18] = 0x1B;
   cmd[19] = 0x40;
   cmd[20] = 0x0B;
@@ -299,31 +290,29 @@ void AlpicoolDevice::send_power(bool state) {
   cmd[33] = 0x00;
   cmd[34] = 0x06;
 
-  // Checksum (forcé selon vos captures)
-  if (state) {
-    cmd[35] = 0x87;
-    cmd[36] = 0x06;
-    cmd[37] = 0x00;
-  } else {
-    cmd[35] = 0x80;
-    cmd[36] = 0x06;
-    cmd[37] = 0x00;
+  // Calculer le checksum (au lieu de le forcer)
+  uint16_t checksum = 0;
+  for (int i = 0; i < 36; i++) {
+    checksum += cmd[i];
   }
+  cmd[35] = (checksum >> 8) & 0xFF;
+  cmd[36] = checksum & 0xFF;
+  // cmd[37] n'est pas utilisé (la trame fait 38 octets avec checksum sur 36)
 
-  // Log de la trame
+  // Log
   char hex_str[120];
-  sprintf(hex_str, "");
-  for (int i = 0; i < 38; i++) {
+  for (int i = 0; i < 36; i++) {
     char buf[5];
     sprintf(buf, "%02X ", cmd[i]);
     strcat(hex_str, buf);
   }
-  ESP_LOGI(TAG, "Sending full SET frame: %s", hex_str);
+  ESP_LOGI(TAG, "Sending full SET frame (len=%d): %s", 36, hex_str);
 
-  this->send_command_(cmd, 38);
+  this->send_command_(cmd, 36);
 }
 // ============================================================
-
+// Fin de la modifications JMG "send command
+//=============================================================
 void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {
   uint8_t cmd[] = {PREAMBLE_1, PREAMBLE_2, 0x04, cmd_code, static_cast<uint8_t>(temp), 0x00, 0x00};
   uint16_t checksum = this->calculate_checksum_(cmd, 5);
