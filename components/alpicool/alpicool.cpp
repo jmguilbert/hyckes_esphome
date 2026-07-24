@@ -9,13 +9,12 @@ namespace alpicool {
 
 static const char *const TAG = "alpicool";
 
-// Mémoire dynamique pour le fonctionnement du frigo
 static uint8_t last_fridge_state[36] = {0};
 static bool state_received = false;
-static bool is_paired = false; // Le fameux verrouillage "APP" !
+static bool is_paired = false; 
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (FULL BIND PROTOCOL)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (OFFICIAL BIND PROTOCOL)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -44,7 +43,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
       this->write_handle_ = 0;
       this->has_settings_ = false;
       state_received = false;
-      is_paired = false; // On reverrouille à la déconnexion
+      is_paired = false; 
       this->publish_connected_(false);
       break;
     }
@@ -83,10 +82,9 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
       this->publish_connected_(true);
       ESP_LOGI(TAG, "[BLE] Ready - notifications registered.");
       
-      // Envoi immédiat de la requête d'appairage (BIND)
-      ESP_LOGI(TAG, ">>> PLEASE PRESS THE GEAR BUTTON ON FRIDGE (APP IS FLASHING) <<<");
-      uint8_t bind_cmd[6] = {0xFE, 0xFE, 0x03, 0x00, 0x01, 0xFF};
-      this->send_command_(bind_cmd, 6);
+      // La trame de ping 0x01 officielle sur 36 octets déclenche le vrai mode APP
+      ESP_LOGI(TAG, ">>> SENDING PAIRING REQUEST (WAITING FOR 'APP' & BUTTON PRESS) <<<");
+      this->send_status_request_();
       break;
     }
 
@@ -112,12 +110,10 @@ void AlpicoolDevice::update() {
   if (this->node_state != espbt::ClientState::ESTABLISHED) return;
   
   if (!is_paired) {
-    ESP_LOGI(TAG, "[BLE] Still waiting for BIND... Retrying APP prompt...");
-    uint8_t bind_cmd[6] = {0xFE, 0xFE, 0x03, 0x00, 0x01, 0xFF};
-    this->send_command_(bind_cmd, 6);
-  } else {
-    this->send_status_request_();
+    ESP_LOGI(TAG, "[BLE] Still not paired... Retrying APP prompt...");
   }
+  // Que l'on soit appairé ou non, la requête d'état 0x01 est la même !
+  this->send_status_request_();
 }
 
 void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
@@ -128,17 +124,16 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 
   if (expected_checksum != received_checksum) return;
 
-  // 1. RÉPONSE D'APPAIRAGE (La fameuse trame 0x00 capturée)
-  if (len == 7 && data[3] == 0x00) {
+  // 1. INTERCEPTION DE TA TRAME D'APPAIRAGE (7 octets)
+  if (len == 7 && data[0] == 0xFE && data[1] == 0xFE && data[3] == 0x00 && data[4] == 0x01) {
     ESP_LOGI(TAG, "===============================================");
     ESP_LOGI(TAG, "!!! APPAIRAGE VALIDÉ PAR LE FRIGO (APP) !!!");
     ESP_LOGI(TAG, "===============================================");
     is_paired = true;
-    this->send_status_request_(); // On demande immédiatement les températures
     return;
   }
   
-  // 2. RÉPONSE D'ÉTAT (36 octets)
+  // 2. RÉPONSE D'ÉTAT CLASSIQUE (36 octets)
   if (len == 36 && (data[3] == 0x01 || data[3] == 0x02)) {
     memcpy(last_fridge_state, data, 36);
     state_received = true;
@@ -167,15 +162,33 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 }
 
 void AlpicoolDevice::send_status_request_() {
-  uint8_t cmd[6] = {0xFE, 0xFE, 0x03, 0x01, 0x02, 0x00}; // Commande READ
-  this->send_command_(cmd, 6);
+  uint8_t cmd[36];
+  if (state_received) {
+    memcpy(cmd, last_fridge_state, 36);
+  } else {
+    uint8_t fallback[36] = {
+      0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
+      0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
+      0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
+    };
+    memcpy(cmd, fallback, 36);
+  }
+
+  cmd[3] = 0x01; // Commande PING / READ / TRIGGER APP
+  
+  uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
+  cmd[34] = (checksum_val >> 8) & 0xFF; 
+  cmd[35] = checksum_val & 0xFF;        
+  
+  this->send_command_(cmd, 36);
 }
 
 void AlpicoolDevice::send_set_state_() {
-  if (!is_paired || !state_received) {
-    ESP_LOGW(TAG, "ABORT SEND: Not paired (APP) or no baseline frame yet.");
+  if (!is_paired) {
+    ESP_LOGW(TAG, "ABORT SEND: Fridge is not paired yet (Press Gear Button on APP prompt) !");
     return;
   }
+  if (!state_received) return;
 
   uint8_t cmd[36];
   memcpy(cmd, last_fridge_state, 36);
