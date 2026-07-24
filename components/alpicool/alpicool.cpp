@@ -1,5 +1,6 @@
 #include "alpicool.h"
 #include "esphome/core/log.h"
+#include "esphome/core/helpers.h" // Ajouté pour afficher proprement l'hexadécimal
 
 #ifdef USE_ESP32
 
@@ -9,24 +10,13 @@ namespace alpicool {
 static const char *const TAG = "alpicool";
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (VERBOSE MODE)...");
 }
 
 void AlpicoolDevice::dump_config() {
   ESP_LOGCONFIG(TAG, "Hyckes Fridge:");
   ESP_LOGCONFIG(TAG, "  Dual-zone: %s", this->dual_zone_detected_ ? "YES" : "not yet detected");
   LOG_UPDATE_INTERVAL(this);
-  LOG_SENSOR("  ", "Left Current Temperature", this->left_current_temp_sensor_);
-  LOG_SENSOR("  ", "Left Target Temperature", this->left_target_temp_sensor_);
-  LOG_SENSOR("  ", "Input Voltage", this->voltage_sensor_);
-  LOG_BINARY_SENSOR("  ", "Connected", this->connected_sensor_);
-  LOG_BINARY_SENSOR("  ", "Running", this->running_sensor_);
-  LOG_SWITCH("  ", "Power", this->power_switch_);
-  LOG_SWITCH("  ", "Eco Mode", this->eco_switch_);
-  LOG_NUMBER("  ", "Left Target Temperature", this->left_temp_number_);
-  LOG_SENSOR("  ", "Right Current Temperature", this->right_current_temp_sensor_);
-  LOG_SENSOR("  ", "Right Target Temperature", this->right_target_temp_sensor_);
-  LOG_NUMBER("  ", "Right Target Temperature", this->right_temp_number_);
 }
 
 void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
@@ -35,16 +25,16 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
   switch (event) {
     case ESP_GATTC_OPEN_EVT: {
       if (param->open.status == ESP_GATT_OK) {
-        ESP_LOGI(TAG, "Connected to Hyckes fridge");
+        ESP_LOGI(TAG, "[BLE] Connected to Hyckes fridge");
       } else {
-        ESP_LOGW(TAG, "Connection failed, status=%d", param->open.status);
+        ESP_LOGW(TAG, "[BLE] Connection failed, status=%d", param->open.status);
         this->publish_connected_(false);
       }
       break;
     }
 
     case ESP_GATTC_DISCONNECT_EVT: {
-      ESP_LOGW(TAG, "Disconnected from Hyckes fridge");
+      ESP_LOGW(TAG, "[BLE] Disconnected from Hyckes fridge");
       this->notify_handle_ = 0;
       this->write_handle_ = 0;
       this->has_settings_ = false;
@@ -55,14 +45,14 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     case ESP_GATTC_SEARCH_CMPL_EVT: {
       auto *write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
       if (write_chr == nullptr) {
-        ESP_LOGW(TAG, "Write characteristic not found");
+        ESP_LOGW(TAG, "[BLE] Write characteristic not found");
         break;
       }
       this->write_handle_ = write_chr->handle;
 
       auto *notify_chr = this->parent()->get_characteristic(this->service_uuid_, this->notify_char_uuid_);
       if (notify_chr == nullptr) {
-        ESP_LOGW(TAG, "Notify characteristic not found");
+        ESP_LOGW(TAG, "[BLE] Notify characteristic not found");
         break;
       }
       this->notify_handle_ = notify_chr->handle;
@@ -72,19 +62,19 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
           this->parent()->get_remote_bda(),
           this->notify_handle_);
       if (status) {
-        ESP_LOGW(TAG, "Failed to register for notifications, status=%d", status);
+        ESP_LOGW(TAG, "[BLE] Failed to register for notifications, status=%d", status);
       }
       break;
     }
 
     case ESP_GATTC_REG_FOR_NOTIFY_EVT: {
       if (param->reg_for_notify.status != ESP_GATT_OK) {
-        ESP_LOGW(TAG, "Notification registration failed, status=%d", param->reg_for_notify.status);
+        ESP_LOGW(TAG, "[BLE] Notification registration failed, status=%d", param->reg_for_notify.status);
         break;
       }
       this->node_state = espbt::ClientState::ESTABLISHED;
       this->publish_connected_(true);
-      ESP_LOGI(TAG, "Ready - notifications registered");
+      ESP_LOGI(TAG, "[BLE] Ready - notifications registered. Waiting for data...");
       break;
     }
 
@@ -97,7 +87,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
 
     case ESP_GATTC_WRITE_CHAR_EVT: {
       if (param->write.status != ESP_GATT_OK) {
-        ESP_LOGW(TAG, "Write failed, status=%d", param->write.status);
+        ESP_LOGW(TAG, "[BLE] Write failed, status=%d", param->write.status);
       }
       break;
     }
@@ -115,34 +105,32 @@ void AlpicoolDevice::update() {
 }
 
 void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
-  // Le Hyckes utilise des trames de 36 octets
-  if (len != 36) {
-    ESP_LOGW(TAG, "Unexpected response length: %d bytes (expected 36 for Hyckes)", len);
+  ESP_LOGI(TAG, "--- RAW DATA RECEIVED ---");
+  ESP_LOGI(TAG, "Length: %d bytes", len);
+  ESP_LOGI(TAG, "Hex: %s", format_hex_pretty(data, len).c_str());
+
+  if (len < 36) {
+    ESP_LOGW(TAG, "Frame rejected: Too short!");
     return;
   }
 
   if (data[0] != 0xFE || data[1] != 0xFE) {
-    ESP_LOGW(TAG, "Invalid preamble: 0x%02X 0x%02X", data[0], data[1]);
-    return;
+    ESP_LOGW(TAG, "Warning: Invalid preamble, but trying to parse anyway...");
   }
 
-  // Vérification de la commande (0x02 = Retour d'état)
   if (data[3] != 0x02) {
-    return;
+    ESP_LOGW(TAG, "Warning: Command byte is %02X (expected 0x02).", data[3]);
   }
 
-  // Calcul du checksum sur 16 bits à partir des 34 premiers octets (index 0 à 33)
   uint16_t expected_checksum = this->calculate_checksum_(data, 34);
-  // Reconstitution du checksum reçu (Octet 34 = High byte, Octet 35 = Low byte)
   uint16_t received_checksum = (data[34] << 8) | data[35];
 
   if (expected_checksum != received_checksum) {
-    ESP_LOGW(TAG, "Checksum mismatch! Expected: %04X, Received: %04X", expected_checksum, received_checksum);
-    return;
+    ESP_LOGW(TAG, "Checksum mismatch! Calc: %04X, Recv: %04X -> BYPASSING FOR DEBUG", expected_checksum, received_checksum);
+  } else {
+    ESP_LOGI(TAG, "Checksum OK!");
   }
   
-  ESP_LOGI(TAG, "Valid frame received! Updating sensors...");
-
   // Décodage Hyckes
   bool is_on = (data[5] == 0x01);
   int8_t left_target_temp = static_cast<int8_t>(data[8]);
@@ -150,7 +138,6 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
   int8_t right_target_temp = static_cast<int8_t>(data[22]);
   int8_t right_actual_temp = static_cast<int8_t>(data[23]);
 
-  // Sauvegarde des états pour l'envoi de commandes futures
   this->last_settings_.on = is_on;
   this->last_settings_.temp_set = left_target_temp;
   this->last_right_settings_.temp_set = right_target_temp;
@@ -158,53 +145,36 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
   this->has_settings_ = true;
   this->dual_zone_detected_ = true;
 
-  // Publication des capteurs - Zone 1
-  if (this->power_switch_ != nullptr)
-    this->power_switch_->publish_state(is_on);
+  if (this->power_switch_ != nullptr) this->power_switch_->publish_state(is_on);
+  if (this->left_target_temp_sensor_ != nullptr) this->left_target_temp_sensor_->publish_state(left_target_temp);
+  if (this->left_temp_number_ != nullptr) this->left_temp_number_->publish_state(left_target_temp);
+  if (this->left_current_temp_sensor_ != nullptr) this->left_current_temp_sensor_->publish_state(left_actual_temp);
+  if (this->right_target_temp_sensor_ != nullptr) this->right_target_temp_sensor_->publish_state(right_target_temp);
+  if (this->right_temp_number_ != nullptr) this->right_temp_number_->publish_state(right_target_temp);
+  if (this->right_current_temp_sensor_ != nullptr) this->right_current_temp_sensor_->publish_state(right_actual_temp);
 
-  if (this->left_target_temp_sensor_ != nullptr)
-    this->left_target_temp_sensor_->publish_state(left_target_temp);
-
-  if (this->left_temp_number_ != nullptr)
-    this->left_temp_number_->publish_state(left_target_temp);
-
-  if (this->left_current_temp_sensor_ != nullptr)
-    this->left_current_temp_sensor_->publish_state(left_actual_temp);
-
-  // Publication des capteurs - Zone 2
-  if (this->right_target_temp_sensor_ != nullptr)
-    this->right_target_temp_sensor_->publish_state(right_target_temp);
-
-  if (this->right_temp_number_ != nullptr)
-    this->right_temp_number_->publish_state(right_target_temp);
-
-  if (this->right_current_temp_sensor_ != nullptr)
-    this->right_current_temp_sensor_->publish_state(right_actual_temp);
+  ESP_LOGI(TAG, "Sensors successfully updated!");
 }
 
 void AlpicoolDevice::send_status_request_() {
-  // Trame de prise de contact (Handshake)
+  ESP_LOGI(TAG, "--- SENDING PERIODIC PING ---");
   uint8_t cmd[36] = {
     0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
     0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
     0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
   };
 
-  // Calcul du checksum sur les 34 premiers octets (index 0 à 33)
   uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
-  cmd[34] = (checksum_val >> 8) & 0xFF; // High byte
-  cmd[35] = checksum_val & 0xFF;        // Low byte
+  cmd[34] = (checksum_val >> 8) & 0xFF; 
+  cmd[35] = checksum_val & 0xFF;        
 
+  ESP_LOGI(TAG, "Ping Hex: %s", format_hex_pretty(cmd, 36).c_str());
   this->send_command_(cmd, 36);
-}
-
-void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {
-  // Remplacé par send_set_state_()
 }
 
 void AlpicoolDevice::send_set_state_() {
   if (!this->has_settings_) {
-    ESP_LOGW(TAG, "Cannot send state: waiting for first notification from fridge");
+    ESP_LOGW(TAG, "ABORT SEND: has_settings_ is false. The fridge hasn't provided its baseline yet.");
     return;
   }
 
@@ -214,17 +184,16 @@ void AlpicoolDevice::send_set_state_() {
     0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
   };
 
-  // Injection des états cibles
   cmd[5] = this->last_settings_.on ? 0x01 : 0x00;
   cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
   cmd[22] = static_cast<uint8_t>(this->last_right_settings_.temp_set);
 
-  // Calcul du checksum sur 16 bits
   uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
   cmd[34] = (checksum_val >> 8) & 0xFF;
   cmd[35] = checksum_val & 0xFF;
 
-  ESP_LOGI(TAG, "Sending 36-byte command frame to Hyckes");
+  ESP_LOGI(TAG, "--- SENDING COMMAND ---");
+  ESP_LOGI(TAG, "Cmd Hex: %s", format_hex_pretty(cmd, 36).c_str());
   this->send_command_(cmd, 36);
 }
 
@@ -249,7 +218,6 @@ void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
 }
 
 uint16_t AlpicoolDevice::calculate_checksum_(const uint8_t *data, uint16_t len) {
-  // Retour de la logique 16 bits d'origine !
   uint16_t sum = 0;
   for (uint16_t i = 0; i < len; i++) {
     sum += data[i];
@@ -263,7 +231,11 @@ void AlpicoolDevice::publish_connected_(bool connected) {
 }
 
 void AlpicoolDevice::send_power(bool state) {
-  if (!this->has_settings_) return;
+  ESP_LOGI(TAG, "Button Power pressed! Target state: %s", state ? "ON" : "OFF");
+  if (!this->has_settings_) {
+    ESP_LOGW(TAG, "Cannot change power: waiting for first valid frame from fridge");
+    return;
+  }
   this->last_settings_.on = state;
   this->send_set_state_();
 }
@@ -274,16 +246,20 @@ void AlpicoolDevice::send_eco(bool state) {
 }
 
 void AlpicoolDevice::send_left_target_temperature(int8_t temp) {
+  ESP_LOGI(TAG, "Slider Left Temp changed! Target: %d", temp);
   if (!this->has_settings_) return;
   this->last_settings_.temp_set = temp;
   this->send_set_state_();
 }
 
 void AlpicoolDevice::send_right_target_temperature(int8_t temp) {
+  ESP_LOGI(TAG, "Slider Right Temp changed! Target: %d", temp);
   if (!this->has_settings_) return;
   this->last_right_settings_.temp_set = temp;
   this->send_set_state_();
 }
+
+void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {}
 
 // Switch implementations
 void AlpicoolPowerSwitch::write_state(bool state) {
