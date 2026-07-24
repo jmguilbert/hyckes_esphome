@@ -14,7 +14,7 @@ static uint8_t last_fridge_state[36] = {0};
 static bool state_received = false;
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (DYNAMIC CLONE & UUID FORCED)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (PROTOCOL UNLOCKED)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -49,7 +49,6 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
 
     case ESP_GATTC_SEARCH_CMPL_EVT: {
       // FORÇAGE DES UUID POUR LE HYCKES !
-      // Le Hyckes utilise 1237 pour Write et non 1235 comme l'Alpicool.
       this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1237);
       this->notify_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1236);
 
@@ -58,18 +57,12 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
         ESP_LOGW(TAG, "[BLE] UUID 1237 not found! Trying fallback 1235...");
         this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1235);
         write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
-      } else {
-        ESP_LOGI(TAG, "[BLE] SUCCESS: Write characteristic bound to 1237");
       }
 
-      if (write_chr != nullptr) {
-        this->write_handle_ = write_chr->handle;
-      }
+      if (write_chr != nullptr) this->write_handle_ = write_chr->handle;
 
       auto *notify_chr = this->parent()->get_characteristic(this->service_uuid_, this->notify_char_uuid_);
-      if (notify_chr != nullptr) {
-        this->notify_handle_ = notify_chr->handle;
-      }
+      if (notify_chr != nullptr) this->notify_handle_ = notify_chr->handle;
 
       auto status = esp_ble_gattc_register_for_notify(
           this->parent()->get_gattc_if(),
@@ -93,8 +86,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     }
 
     case ESP_GATTC_NOTIFY_EVT: {
-      if (param->notify.handle != this->notify_handle_)
-        break;
+      if (param->notify.handle != this->notify_handle_) break;
       this->parse_status_response_(param->notify.value, param->notify.value_len);
       break;
     }
@@ -114,22 +106,25 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
 }
 
 void AlpicoolDevice::update() {
-  if (this->node_state != espbt::ClientState::ESTABLISHED) {
-    return;
-  }
+  if (this->node_state != espbt::ClientState::ESTABLISHED) return;
   this->send_status_request_();
 }
 
 void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
   if (len < 36) return;
 
+  // On rejette les trames qui ne sont pas des retours valides d'état ou d'écho
+  if (data[3] != 0x01 && data[3] != 0x02) return;
+
   uint16_t expected_checksum = this->calculate_checksum_(data, 34);
   uint16_t received_checksum = (data[34] << 8) | data[35];
 
   if (expected_checksum == received_checksum) {
-    // Si la trame est mathématiquement valide, on la clone en mémoire
+    // Le frigo nous envoie une trame saine, on la clone en mémoire comme base de travail
     memcpy(last_fridge_state, data, 36);
     state_received = true;
+  } else {
+    return; // Checksum invalide, on ne met pas à jour les capteurs
   }
   
   bool is_on = (data[5] == 0x01);
@@ -155,11 +150,27 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 }
 
 void AlpicoolDevice::send_status_request_() {
-  uint8_t cmd[6] = {0xFE, 0xFE, 0x03, 0x01, 0x00, 0x00};
-  uint16_t checksum_val = this->calculate_checksum_(cmd, 4);
-  cmd[4] = (checksum_val >> 8) & 0xFF; 
-  cmd[5] = checksum_val & 0xFF;        
-  this->send_command_(cmd, 6);
+  uint8_t cmd[36];
+  if (state_received) {
+    memcpy(cmd, last_fridge_state, 36);
+  } else {
+    // Trame de base sécurisée au cas où le frigo n'a rien envoyé
+    uint8_t fallback[36] = {
+      0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
+      0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
+      0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
+    };
+    memcpy(cmd, fallback, 36);
+  }
+
+  // 0x01 = Commande de PING / DÉVERROUILLAGE (Affiche "APP" sur le frigo)
+  cmd[3] = 0x01; 
+  
+  uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
+  cmd[34] = (checksum_val >> 8) & 0xFF; 
+  cmd[35] = checksum_val & 0xFF;        
+  
+  this->send_command_(cmd, 36);
 }
 
 void AlpicoolDevice::send_set_state_() {
@@ -169,29 +180,27 @@ void AlpicoolDevice::send_set_state_() {
   }
 
   uint8_t cmd[36];
-  // On copie la dernière trame reçue EXACTE du frigo
   memcpy(cmd, last_fridge_state, 36);
 
-  // On injecte nos modifications
-  cmd[3] = 0x01; // Commande d'écriture
+  // 0x02 = Commande D'ÉCRITURE / MODIFICATION DES RÉGLAGES
+  cmd[3] = 0x02; 
+  
+  // Injection des nouveaux paramètres
   cmd[5] = this->last_settings_.on ? 0x01 : 0x00;
   cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
   cmd[22] = static_cast<uint8_t>(this->last_right_settings_.temp_set);
 
-  // On recalcule le checksum
+  // Calcul du checksum final
   uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
   cmd[34] = (checksum_val >> 8) & 0xFF;
   cmd[35] = checksum_val & 0xFF;
 
-  ESP_LOGI(TAG, "--- SENDING DYNAMIC COMMAND TO 1237 ---");
-  ESP_LOGI(TAG, "Cmd Hex: %s", format_hex_pretty(cmd, 36).c_str());
+  ESP_LOGI(TAG, "--- SENDING WRITE COMMAND (0x02) ---");
   this->send_command_(cmd, 36);
 }
 
 void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
-  if (this->node_state != espbt::ClientState::ESTABLISHED) {
-    return;
-  }
+  if (this->node_state != espbt::ClientState::ESTABLISHED) return;
 
   auto err = esp_ble_gattc_write_char(
       this->parent()->get_gattc_if(),
@@ -202,22 +211,17 @@ void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
       ESP_GATT_WRITE_TYPE_NO_RSP,
       ESP_GATT_AUTH_REQ_NONE);
 
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "Write failed: %d", err);
-  }
+  if (err != ESP_OK) ESP_LOGW(TAG, "Write failed: %d", err);
 }
 
 uint16_t AlpicoolDevice::calculate_checksum_(const uint8_t *data, uint16_t len) {
   uint16_t sum = 0;
-  for (uint16_t i = 0; i < len; i++) {
-    sum += data[i];
-  }
+  for (uint16_t i = 0; i < len; i++) sum += data[i];
   return sum;
 }
 
 void AlpicoolDevice::publish_connected_(bool connected) {
-  if (this->connected_sensor_ != nullptr)
-    this->connected_sensor_->publish_state(connected);
+  if (this->connected_sensor_ != nullptr) this->connected_sensor_->publish_state(connected);
 }
 
 void AlpicoolDevice::send_power(bool state) {
