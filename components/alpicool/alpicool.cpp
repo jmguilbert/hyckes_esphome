@@ -9,12 +9,11 @@ namespace alpicool {
 
 static const char *const TAG = "alpicool";
 
-// Mémoire dynamique pour cloner la trame exacte du frigo
 static uint8_t last_fridge_state[36] = {0};
 static bool state_received = false;
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (NATIVE UUID 1237 & 36-BYTE PING)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (PAIRING FORCED)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -48,7 +47,15 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     }
 
     case ESP_GATTC_SEARCH_CMPL_EVT: {
+      this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1237);
+      this->notify_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1236);
+
       auto *write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
+      if (write_chr == nullptr) {
+        this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1235);
+        write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
+      }
+
       if (write_chr != nullptr) this->write_handle_ = write_chr->handle;
 
       auto *notify_chr = this->parent()->get_characteristic(this->service_uuid_, this->notify_char_uuid_);
@@ -66,12 +73,21 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
 
     case ESP_GATTC_REG_FOR_NOTIFY_EVT: {
       if (param->reg_for_notify.status != ESP_GATT_OK) {
-        ESP_LOGW(TAG, "[BLE] Notification registration failed, status=%d", param->reg_for_notify.status);
+        ESP_LOGW(TAG, "[BLE] Notification registration failed");
         break;
       }
       this->node_state = espbt::ClientState::ESTABLISHED;
       this->publish_connected_(true);
-      ESP_LOGI(TAG, "[BLE] Ready - notifications registered. Waiting for data...");
+      ESP_LOGI(TAG, "[BLE] Ready - notifications registered.");
+
+      // Injection de la trame d'appairage magique pour forcer l'affichage APP
+      uint8_t pair_cmd[36] = {
+        0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x03, 0x08, 0x00, 0x02,
+        0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x0E, 0x30, 0x0A, 0x08, 0xF4, 0xF4,
+        0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x03, 0x00, 0x06, 0x57
+      };
+      ESP_LOGI(TAG, "[BLE] Triggering APP prompt...");
+      this->send_command_(pair_cmd, 36);
       break;
     }
 
@@ -134,27 +150,13 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 }
 
 void AlpicoolDevice::send_status_request_() {
-  uint8_t cmd[36];
-  if (state_received) {
-    memcpy(cmd, last_fridge_state, 36);
-  } else {
-    // Trame de base sécurisée
-    uint8_t fallback[36] = {
-      0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
-      0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
-      0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
-    };
-    memcpy(cmd, fallback, 36);
-  }
-
-  // L'octet clé du PING : 0x01 déverrouille le mode APP
-  cmd[3] = 0x01; 
+  uint8_t cmd[6] = {0xFE, 0xFE, 0x03, 0x01, 0x00, 0x00};
   
-  uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
-  cmd[34] = (checksum_val >> 8) & 0xFF; 
-  cmd[35] = checksum_val & 0xFF;        
+  uint16_t checksum_val = this->calculate_checksum_(cmd, 4);
+  cmd[4] = (checksum_val >> 8) & 0xFF; 
+  cmd[5] = checksum_val & 0xFF;        
   
-  this->send_command_(cmd, 36);
+  this->send_command_(cmd, 6);
 }
 
 void AlpicoolDevice::send_set_state_() {
