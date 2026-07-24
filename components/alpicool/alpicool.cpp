@@ -9,8 +9,12 @@ namespace alpicool {
 
 static const char *const TAG = "alpicool";
 
+// Mémoire dynamique pour cloner la trame exacte du frigo
+static uint8_t last_fridge_state[36] = {0};
+static bool state_received = false;
+
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (VERBOSE MODE)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (DYNAMIC CLONE & UUID FORCED)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -38,24 +42,34 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
       this->notify_handle_ = 0;
       this->write_handle_ = 0;
       this->has_settings_ = false;
+      state_received = false;
       this->publish_connected_(false);
       break;
     }
 
     case ESP_GATTC_SEARCH_CMPL_EVT: {
+      // FORÇAGE DES UUID POUR LE HYCKES !
+      // Le Hyckes utilise 1237 pour Write et non 1235 comme l'Alpicool.
+      this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1237);
+      this->notify_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1236);
+
       auto *write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
       if (write_chr == nullptr) {
-        ESP_LOGW(TAG, "[BLE] Write characteristic not found");
-        break;
+        ESP_LOGW(TAG, "[BLE] UUID 1237 not found! Trying fallback 1235...");
+        this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1235);
+        write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
+      } else {
+        ESP_LOGI(TAG, "[BLE] SUCCESS: Write characteristic bound to 1237");
       }
-      this->write_handle_ = write_chr->handle;
+
+      if (write_chr != nullptr) {
+        this->write_handle_ = write_chr->handle;
+      }
 
       auto *notify_chr = this->parent()->get_characteristic(this->service_uuid_, this->notify_char_uuid_);
-      if (notify_chr == nullptr) {
-        ESP_LOGW(TAG, "[BLE] Notify characteristic not found");
-        break;
+      if (notify_chr != nullptr) {
+        this->notify_handle_ = notify_chr->handle;
       }
-      this->notify_handle_ = notify_chr->handle;
 
       auto status = esp_ble_gattc_register_for_notify(
           this->parent()->get_gattc_if(),
@@ -88,6 +102,8 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     case ESP_GATTC_WRITE_CHAR_EVT: {
       if (param->write.status != ESP_GATT_OK) {
         ESP_LOGW(TAG, "[BLE] Write failed, status=%d", param->write.status);
+      } else {
+        ESP_LOGI(TAG, "[BLE] Command accepted by fridge!");
       }
       break;
     }
@@ -105,34 +121,17 @@ void AlpicoolDevice::update() {
 }
 
 void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
-  ESP_LOGI(TAG, "--- RAW DATA RECEIVED ---");
-  ESP_LOGI(TAG, "Length: %d bytes", len);
-  ESP_LOGI(TAG, "Hex: %s", format_hex_pretty(data, len).c_str());
-
-  if (len < 36) {
-    ESP_LOGW(TAG, "Frame rejected: Too short!");
-    return;
-  }
-
-  if (data[0] != 0xFE || data[1] != 0xFE) {
-    ESP_LOGW(TAG, "Warning: Invalid preamble, but trying to parse anyway...");
-  }
-
-  // Avertissement uniquement si la commande n'est ni 0x01 (Echo/Read) ni 0x02 (Write/Status)
-  if (data[3] != 0x02 && data[3] != 0x01) {
-    ESP_LOGW(TAG, "Warning: Command byte is %02X (expected 0x02 or 0x01).", data[3]);
-  }
+  if (len < 36) return;
 
   uint16_t expected_checksum = this->calculate_checksum_(data, 34);
   uint16_t received_checksum = (data[34] << 8) | data[35];
 
-  if (expected_checksum != received_checksum) {
-    ESP_LOGW(TAG, "Checksum mismatch! Calc: %04X, Recv: %04X -> BYPASSING FOR DEBUG", expected_checksum, received_checksum);
-  } else {
-    ESP_LOGI(TAG, "Checksum OK!");
+  if (expected_checksum == received_checksum) {
+    // Si la trame est mathématiquement valide, on la clone en mémoire
+    memcpy(last_fridge_state, data, 36);
+    state_received = true;
   }
   
-  // Décodage Hyckes
   bool is_on = (data[5] == 0x01);
   int8_t left_target_temp = static_cast<int8_t>(data[8]);
   int8_t left_actual_temp = static_cast<int8_t>(data[9]);
@@ -153,52 +152,44 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
   if (this->right_target_temp_sensor_ != nullptr) this->right_target_temp_sensor_->publish_state(right_target_temp);
   if (this->right_temp_number_ != nullptr) this->right_temp_number_->publish_state(right_target_temp);
   if (this->right_current_temp_sensor_ != nullptr) this->right_current_temp_sensor_->publish_state(right_actual_temp);
-
-  ESP_LOGI(TAG, "Sensors successfully updated!");
 }
 
 void AlpicoolDevice::send_status_request_() {
-  ESP_LOGI(TAG, "--- SENDING STANDARD PING (6 bytes) ---");
-  // Ping court (0x01 = Commande de Lecture)
   uint8_t cmd[6] = {0xFE, 0xFE, 0x03, 0x01, 0x00, 0x00};
-
   uint16_t checksum_val = this->calculate_checksum_(cmd, 4);
   cmd[4] = (checksum_val >> 8) & 0xFF; 
   cmd[5] = checksum_val & 0xFF;        
-
-  ESP_LOGI(TAG, "Ping Hex: %s", format_hex_pretty(cmd, 6).c_str());
   this->send_command_(cmd, 6);
 }
 
 void AlpicoolDevice::send_set_state_() {
-  if (!this->has_settings_) {
-    ESP_LOGW(TAG, "ABORT SEND: has_settings_ is false. The fridge hasn't provided its baseline yet.");
+  if (!state_received) {
+    ESP_LOGW(TAG, "ABORT SEND: No valid baseline frame cloned from fridge yet.");
     return;
   }
 
-  // Changement CRUCIAL : L'octet à l'index 3 est passé à 0x02 (Commande d'Écriture)
-  uint8_t cmd[36] = {
-    0xFE, 0xFE, 0x21, 0x02, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
-    0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
-    0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
-  };
+  uint8_t cmd[36];
+  // On copie la dernière trame reçue EXACTE du frigo
+  memcpy(cmd, last_fridge_state, 36);
 
+  // On injecte nos modifications
+  cmd[3] = 0x01; // Commande d'écriture
   cmd[5] = this->last_settings_.on ? 0x01 : 0x00;
   cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
   cmd[22] = static_cast<uint8_t>(this->last_right_settings_.temp_set);
 
+  // On recalcule le checksum
   uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
   cmd[34] = (checksum_val >> 8) & 0xFF;
   cmd[35] = checksum_val & 0xFF;
 
-  ESP_LOGI(TAG, "--- SENDING COMMAND ---");
+  ESP_LOGI(TAG, "--- SENDING DYNAMIC COMMAND TO 1237 ---");
   ESP_LOGI(TAG, "Cmd Hex: %s", format_hex_pretty(cmd, 36).c_str());
   this->send_command_(cmd, 36);
 }
 
 void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
   if (this->node_state != espbt::ClientState::ESTABLISHED) {
-    ESP_LOGW(TAG, "Not connected, cannot send command");
     return;
   }
 
@@ -230,11 +221,7 @@ void AlpicoolDevice::publish_connected_(bool connected) {
 }
 
 void AlpicoolDevice::send_power(bool state) {
-  ESP_LOGI(TAG, "Button Power pressed! Target state: %s", state ? "ON" : "OFF");
-  if (!this->has_settings_) {
-    ESP_LOGW(TAG, "Cannot change power: waiting for first valid frame from fridge");
-    return;
-  }
+  if (!this->has_settings_) return;
   this->last_settings_.on = state;
   this->send_set_state_();
 }
@@ -245,14 +232,12 @@ void AlpicoolDevice::send_eco(bool state) {
 }
 
 void AlpicoolDevice::send_left_target_temperature(int8_t temp) {
-  ESP_LOGI(TAG, "Slider Left Temp changed! Target: %d", temp);
   if (!this->has_settings_) return;
   this->last_settings_.temp_set = temp;
   this->send_set_state_();
 }
 
 void AlpicoolDevice::send_right_target_temperature(int8_t temp) {
-  ESP_LOGI(TAG, "Slider Right Temp changed! Target: %d", temp);
   if (!this->has_settings_) return;
   this->last_right_settings_.temp_set = temp;
   this->send_set_state_();
