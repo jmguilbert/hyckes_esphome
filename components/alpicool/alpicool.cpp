@@ -9,11 +9,13 @@ namespace alpicool {
 
 static const char *const TAG = "alpicool";
 
+// Mémoire dynamique pour le fonctionnement du frigo
 static uint8_t last_fridge_state[36] = {0};
 static bool state_received = false;
+static bool is_paired = false; // Le fameux verrouillage "APP" !
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (PAIRING FORCED)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (FULL BIND PROTOCOL)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -42,6 +44,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
       this->write_handle_ = 0;
       this->has_settings_ = false;
       state_received = false;
+      is_paired = false; // On reverrouille à la déconnexion
       this->publish_connected_(false);
       break;
     }
@@ -79,15 +82,11 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
       this->node_state = espbt::ClientState::ESTABLISHED;
       this->publish_connected_(true);
       ESP_LOGI(TAG, "[BLE] Ready - notifications registered.");
-
-      // Injection de la trame d'appairage magique pour forcer l'affichage APP
-      uint8_t pair_cmd[36] = {
-        0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x03, 0x08, 0x00, 0x02,
-        0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x0E, 0x30, 0x0A, 0x08, 0xF4, 0xF4,
-        0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x03, 0x00, 0x06, 0x57
-      };
-      ESP_LOGI(TAG, "[BLE] Triggering APP prompt...");
-      this->send_command_(pair_cmd, 36);
+      
+      // Envoi immédiat de la requête d'appairage (BIND)
+      ESP_LOGI(TAG, ">>> PLEASE PRESS THE GEAR BUTTON ON FRIDGE (APP IS FLASHING) <<<");
+      uint8_t bind_cmd[6] = {0xFE, 0xFE, 0x03, 0x00, 0x01, 0xFF};
+      this->send_command_(bind_cmd, 6);
       break;
     }
 
@@ -111,67 +110,78 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
 
 void AlpicoolDevice::update() {
   if (this->node_state != espbt::ClientState::ESTABLISHED) return;
-  this->send_status_request_();
+  
+  if (!is_paired) {
+    ESP_LOGI(TAG, "[BLE] Still waiting for BIND... Retrying APP prompt...");
+    uint8_t bind_cmd[6] = {0xFE, 0xFE, 0x03, 0x00, 0x01, 0xFF};
+    this->send_command_(bind_cmd, 6);
+  } else {
+    this->send_status_request_();
+  }
 }
 
 void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
-  if (len < 36) return;
+  if (len < 6) return;
 
-  uint16_t expected_checksum = this->calculate_checksum_(data, 34);
-  uint16_t received_checksum = (data[34] << 8) | data[35];
+  uint16_t expected_checksum = this->calculate_checksum_(data, len - 2);
+  uint16_t received_checksum = (data[len - 2] << 8) | data[len - 1];
 
-  if (expected_checksum == received_checksum) {
-    memcpy(last_fridge_state, data, 36);
-    state_received = true;
-  } else {
+  if (expected_checksum != received_checksum) return;
+
+  // 1. RÉPONSE D'APPAIRAGE (La fameuse trame 0x00 capturée)
+  if (len == 7 && data[3] == 0x00) {
+    ESP_LOGI(TAG, "===============================================");
+    ESP_LOGI(TAG, "!!! APPAIRAGE VALIDÉ PAR LE FRIGO (APP) !!!");
+    ESP_LOGI(TAG, "===============================================");
+    is_paired = true;
+    this->send_status_request_(); // On demande immédiatement les températures
     return;
   }
   
-  bool is_on = (data[5] == 0x01);
-  int8_t left_target_temp = static_cast<int8_t>(data[8]);
-  int8_t left_actual_temp = static_cast<int8_t>(data[9]);
-  int8_t right_target_temp = static_cast<int8_t>(data[22]);
-  int8_t right_actual_temp = static_cast<int8_t>(data[23]);
+  // 2. RÉPONSE D'ÉTAT (36 octets)
+  if (len == 36 && (data[3] == 0x01 || data[3] == 0x02)) {
+    memcpy(last_fridge_state, data, 36);
+    state_received = true;
 
-  this->last_settings_.on = is_on;
-  this->last_settings_.temp_set = left_target_temp;
-  this->last_right_settings_.temp_set = right_target_temp;
-  
-  this->has_settings_ = true;
-  this->dual_zone_detected_ = true;
+    bool is_on = (data[5] == 0x01);
+    int8_t left_target_temp = static_cast<int8_t>(data[8]);
+    int8_t left_actual_temp = static_cast<int8_t>(data[9]);
+    int8_t right_target_temp = static_cast<int8_t>(data[22]);
+    int8_t right_actual_temp = static_cast<int8_t>(data[23]);
 
-  if (this->power_switch_ != nullptr) this->power_switch_->publish_state(is_on);
-  if (this->left_target_temp_sensor_ != nullptr) this->left_target_temp_sensor_->publish_state(left_target_temp);
-  if (this->left_temp_number_ != nullptr) this->left_temp_number_->publish_state(left_target_temp);
-  if (this->left_current_temp_sensor_ != nullptr) this->left_current_temp_sensor_->publish_state(left_actual_temp);
-  if (this->right_target_temp_sensor_ != nullptr) this->right_target_temp_sensor_->publish_state(right_target_temp);
-  if (this->right_temp_number_ != nullptr) this->right_temp_number_->publish_state(right_target_temp);
-  if (this->right_current_temp_sensor_ != nullptr) this->right_current_temp_sensor_->publish_state(right_actual_temp);
+    this->last_settings_.on = is_on;
+    this->last_settings_.temp_set = left_target_temp;
+    this->last_right_settings_.temp_set = right_target_temp;
+    
+    this->has_settings_ = true;
+    this->dual_zone_detected_ = true;
+
+    if (this->power_switch_ != nullptr) this->power_switch_->publish_state(is_on);
+    if (this->left_target_temp_sensor_ != nullptr) this->left_target_temp_sensor_->publish_state(left_target_temp);
+    if (this->left_temp_number_ != nullptr) this->left_temp_number_->publish_state(left_target_temp);
+    if (this->left_current_temp_sensor_ != nullptr) this->left_current_temp_sensor_->publish_state(left_actual_temp);
+    if (this->right_target_temp_sensor_ != nullptr) this->right_target_temp_sensor_->publish_state(right_target_temp);
+    if (this->right_temp_number_ != nullptr) this->right_temp_number_->publish_state(right_target_temp);
+    if (this->right_current_temp_sensor_ != nullptr) this->right_current_temp_sensor_->publish_state(right_actual_temp);
+  }
 }
 
 void AlpicoolDevice::send_status_request_() {
-  uint8_t cmd[6] = {0xFE, 0xFE, 0x03, 0x01, 0x00, 0x00};
-  
-  uint16_t checksum_val = this->calculate_checksum_(cmd, 4);
-  cmd[4] = (checksum_val >> 8) & 0xFF; 
-  cmd[5] = checksum_val & 0xFF;        
-  
+  uint8_t cmd[6] = {0xFE, 0xFE, 0x03, 0x01, 0x02, 0x00}; // Commande READ
   this->send_command_(cmd, 6);
 }
 
 void AlpicoolDevice::send_set_state_() {
-  if (!state_received) {
-    ESP_LOGW(TAG, "ABORT SEND: No valid baseline frame cloned from fridge yet.");
+  if (!is_paired || !state_received) {
+    ESP_LOGW(TAG, "ABORT SEND: Not paired (APP) or no baseline frame yet.");
     return;
   }
 
   uint8_t cmd[36];
   memcpy(cmd, last_fridge_state, 36);
 
-  // L'octet clé de L'ÉCRITURE : 0x02 enregistre les valeurs
-  cmd[3] = 0x02; 
+  cmd[3] = 0x02; // Commande WRITE
   
-  // Injection des paramètres
   cmd[5] = this->last_settings_.on ? 0x01 : 0x00;
   cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
   cmd[22] = static_cast<uint8_t>(this->last_right_settings_.temp_set);
@@ -233,7 +243,6 @@ void AlpicoolDevice::send_right_target_temperature(int8_t temp) {
 
 void AlpicoolDevice::send_set_temperature_(uint8_t cmd_code, int8_t temp) {}
 
-// Switch implementations
 void AlpicoolPowerSwitch::write_state(bool state) {
   this->parent_->send_power(state);
 }
@@ -242,7 +251,6 @@ void AlpicoolEcoSwitch::write_state(bool state) {
   this->parent_->send_eco(state);
 }
 
-// Number implementation
 void AlpicoolTemperatureNumber::control(float value) {
   int8_t temp = static_cast<int8_t>(value);
   if (this->is_right_zone_) {
