@@ -14,7 +14,7 @@ static uint8_t last_fridge_state[36] = {0};
 static bool state_received = false;
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (PROTOCOL UNLOCKED)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (6-BYTE PING + 36-BYTE SET)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -48,7 +48,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     }
 
     case ESP_GATTC_SEARCH_CMPL_EVT: {
-      // FORÇAGE DES UUID POUR LE HYCKES !
+      // UUID 1237 obligatoire pour l'écriture sur le Hyckes
       this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1237);
       this->notify_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1236);
 
@@ -113,18 +113,16 @@ void AlpicoolDevice::update() {
 void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
   if (len < 36) return;
 
-  // On rejette les trames qui ne sont pas des retours valides d'état ou d'écho
-  if (data[3] != 0x01 && data[3] != 0x02) return;
-
   uint16_t expected_checksum = this->calculate_checksum_(data, 34);
   uint16_t received_checksum = (data[34] << 8) | data[35];
 
   if (expected_checksum == received_checksum) {
-    // Le frigo nous envoie une trame saine, on la clone en mémoire comme base de travail
+    // Trame saine, on la clone en mémoire
     memcpy(last_fridge_state, data, 36);
     state_received = true;
   } else {
-    return; // Checksum invalide, on ne met pas à jour les capteurs
+    ESP_LOGW(TAG, "Checksum mismatch on notify, ignoring frame.");
+    return;
   }
   
   bool is_on = (data[5] == 0x01);
@@ -147,30 +145,20 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
   if (this->right_target_temp_sensor_ != nullptr) this->right_target_temp_sensor_->publish_state(right_target_temp);
   if (this->right_temp_number_ != nullptr) this->right_temp_number_->publish_state(right_target_temp);
   if (this->right_current_temp_sensor_ != nullptr) this->right_current_temp_sensor_->publish_state(right_actual_temp);
+  
+  ESP_LOGD(TAG, "Sensors successfully updated from 36-byte frame!");
 }
 
 void AlpicoolDevice::send_status_request_() {
-  uint8_t cmd[36];
-  if (state_received) {
-    memcpy(cmd, last_fridge_state, 36);
-  } else {
-    // Trame de base sécurisée au cas où le frigo n'a rien envoyé
-    uint8_t fallback[36] = {
-      0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
-      0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
-      0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
-    };
-    memcpy(cmd, fallback, 36);
-  }
-
-  // 0x01 = Commande de PING / DÉVERROUILLAGE (Affiche "APP" sur le frigo)
-  cmd[3] = 0x01; 
+  // Le ping court de 6 octets indispensable pour réveiller le Hyckes
+  uint8_t cmd[6] = {0xFE, 0xFE, 0x03, 0x01, 0x00, 0x00};
   
-  uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
-  cmd[34] = (checksum_val >> 8) & 0xFF; 
-  cmd[35] = checksum_val & 0xFF;        
+  uint16_t checksum_val = this->calculate_checksum_(cmd, 4);
+  cmd[4] = (checksum_val >> 8) & 0xFF; 
+  cmd[5] = checksum_val & 0xFF;        
   
-  this->send_command_(cmd, 36);
+  ESP_LOGI(TAG, "--- SENDING STANDARD PING (6 bytes) ---");
+  this->send_command_(cmd, 6);
 }
 
 void AlpicoolDevice::send_set_state_() {
@@ -182,20 +170,21 @@ void AlpicoolDevice::send_set_state_() {
   uint8_t cmd[36];
   memcpy(cmd, last_fridge_state, 36);
 
-  // 0x02 = Commande D'ÉCRITURE / MODIFICATION DES RÉGLAGES
+  // L'octet clé : 0x02 pour forcer l'enregistrement des données (Write)
   cmd[3] = 0x02; 
   
-  // Injection des nouveaux paramètres
+  // Injection des paramètres depuis Home Assistant
   cmd[5] = this->last_settings_.on ? 0x01 : 0x00;
   cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
   cmd[22] = static_cast<uint8_t>(this->last_right_settings_.temp_set);
 
-  // Calcul du checksum final
+  // Recalcul du checksum
   uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
   cmd[34] = (checksum_val >> 8) & 0xFF;
   cmd[35] = checksum_val & 0xFF;
 
-  ESP_LOGI(TAG, "--- SENDING WRITE COMMAND (0x02) ---");
+  ESP_LOGI(TAG, "--- SENDING WRITE COMMAND (0x02 - 36 bytes) ---");
+  ESP_LOGI(TAG, "Cmd Hex: %s", format_hex_pretty(cmd, 36).c_str());
   this->send_command_(cmd, 36);
 }
 
