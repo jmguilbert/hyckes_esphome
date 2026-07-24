@@ -118,8 +118,9 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
     ESP_LOGW(TAG, "Warning: Invalid preamble, but trying to parse anyway...");
   }
 
-  if (data[3] != 0x02) {
-    ESP_LOGW(TAG, "Warning: Command byte is %02X (expected 0x02).", data[3]);
+  // Avertissement uniquement si la commande n'est ni 0x01 (Echo/Read) ni 0x02 (Write/Status)
+  if (data[3] != 0x02 && data[3] != 0x01) {
+    ESP_LOGW(TAG, "Warning: Command byte is %02X (expected 0x02 or 0x01).", data[3]);
   }
 
   uint16_t expected_checksum = this->calculate_checksum_(data, 34);
@@ -158,7 +159,7 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 
 void AlpicoolDevice::send_status_request_() {
   ESP_LOGI(TAG, "--- SENDING STANDARD PING (6 bytes) ---");
-  // C'est ce ping court d'origine qui force le frigo à répondre !
+  // Ping court (0x01 = Commande de Lecture)
   uint8_t cmd[6] = {0xFE, 0xFE, 0x03, 0x01, 0x00, 0x00};
 
   uint16_t checksum_val = this->calculate_checksum_(cmd, 4);
@@ -175,8 +176,9 @@ void AlpicoolDevice::send_set_state_() {
     return;
   }
 
+  // Changement CRUCIAL : L'octet à l'index 3 est passé à 0x02 (Commande d'Écriture)
   uint8_t cmd[36] = {
-    0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
+    0xFE, 0xFE, 0x21, 0x02, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
     0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
     0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
   };
