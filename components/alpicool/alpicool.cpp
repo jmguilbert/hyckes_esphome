@@ -1,6 +1,6 @@
 #include "alpicool.h"
 #include "esphome/core/log.h"
-#include "esphome/core/helpers.h" // Ajouté pour afficher proprement l'hexadécimal
+#include "esphome/core/helpers.h"
 
 #ifdef USE_ESP32
 
@@ -157,19 +157,16 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 }
 
 void AlpicoolDevice::send_status_request_() {
-  ESP_LOGI(TAG, "--- SENDING PERIODIC PING ---");
-  uint8_t cmd[36] = {
-    0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
-    0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
-    0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
-  };
+  ESP_LOGI(TAG, "--- SENDING STANDARD PING (6 bytes) ---");
+  // C'est ce ping court d'origine qui force le frigo à répondre !
+  uint8_t cmd[6] = {0xFE, 0xFE, 0x03, 0x01, 0x00, 0x00};
 
-  uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
-  cmd[34] = (checksum_val >> 8) & 0xFF; 
-  cmd[35] = checksum_val & 0xFF;        
+  uint16_t checksum_val = this->calculate_checksum_(cmd, 4);
+  cmd[4] = (checksum_val >> 8) & 0xFF; 
+  cmd[5] = checksum_val & 0xFF;        
 
-  ESP_LOGI(TAG, "Ping Hex: %s", format_hex_pretty(cmd, 36).c_str());
-  this->send_command_(cmd, 36);
+  ESP_LOGI(TAG, "Ping Hex: %s", format_hex_pretty(cmd, 6).c_str());
+  this->send_command_(cmd, 6);
 }
 
 void AlpicoolDevice::send_set_state_() {
