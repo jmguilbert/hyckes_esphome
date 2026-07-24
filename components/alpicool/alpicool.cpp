@@ -13,7 +13,7 @@ static uint8_t last_fridge_state[36] = {0};
 static bool state_received = false;
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (UNLOCKED WRITES)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (6-BYTE PING + UNLOCKED WRITE)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -92,6 +92,8 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     case ESP_GATTC_WRITE_CHAR_EVT: {
       if (param->write.status != ESP_GATT_OK) {
         ESP_LOGW(TAG, "[BLE] Write failed, status=%d", param->write.status);
+      } else {
+        ESP_LOGI(TAG, "[BLE] Write successful!");
       }
       break;
     }
@@ -114,7 +116,6 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 
   if (expected_checksum != received_checksum) return;
 
-  // RÉPONSE D'ÉTAT (36 octets)
   if (data[3] == 0x01 || data[3] == 0x02) {
     memcpy(last_fridge_state, data, 36);
     state_received = true;
@@ -143,25 +144,13 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 }
 
 void AlpicoolDevice::send_status_request_() {
-  uint8_t cmd[36];
-  if (state_received) {
-    memcpy(cmd, last_fridge_state, 36);
-  } else {
-    uint8_t fallback[36] = {
-      0xFE, 0xFE, 0x21, 0x01, 0x00, 0x01, 0x01, 0x00, 0x06, 0x08, 0x00, 0x02,
-      0x00, 0x00, 0x00, 0x00, 0xFE, 0x00, 0x1B, 0x40, 0x0B, 0x05, 0xF3, 0xF4,
-      0xEC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x03, 0x00, 0x00, 0x00
-    };
-    memcpy(cmd, fallback, 36);
-  }
-
-  cmd[3] = 0x01; // Commande PING / READ
+  // LE CORRECTIF EST ICI : Retour au ping court de 6 octets qui réveille le frigo
+  uint8_t cmd[6] = {0xFE, 0xFE, 0x03, 0x01, 0x00, 0x00};
+  uint16_t checksum_val = this->calculate_checksum_(cmd, 4);
+  cmd[4] = (checksum_val >> 8) & 0xFF; 
+  cmd[5] = checksum_val & 0xFF;        
   
-  uint16_t checksum_val = this->calculate_checksum_(cmd, 34);
-  cmd[34] = (checksum_val >> 8) & 0xFF; 
-  cmd[35] = checksum_val & 0xFF;        
-  
-  this->send_command_(cmd, 36);
+  this->send_command_(cmd, 6);
 }
 
 void AlpicoolDevice::send_set_state_() {
