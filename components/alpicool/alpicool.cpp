@@ -124,6 +124,10 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
     bool is_on = (data[5] == 0x01);
     int8_t left_target_temp = static_cast<int8_t>(data[8]);
     int8_t left_actual_temp = static_cast<int8_t>(data[9]);
+    
+    // --- NOUVEAU : Récupération de la tension (Octets 20 et 21) ---
+    float voltage = data[20] + (data[21] / 10.0);
+
     int8_t right_target_temp = static_cast<int8_t>(data[22]);
     int8_t right_actual_temp = static_cast<int8_t>(data[23]);
 
@@ -134,6 +138,7 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
     this->has_settings_ = true;
     this->dual_zone_detected_ = true;
 
+    // Publication des états vers Home Assistant
     if (this->power_switch_ != nullptr) this->power_switch_->publish_state(is_on);
     if (this->left_target_temp_sensor_ != nullptr) this->left_target_temp_sensor_->publish_state(left_target_temp);
     if (this->left_temp_number_ != nullptr) this->left_temp_number_->publish_state(left_target_temp);
@@ -141,6 +146,11 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
     if (this->right_target_temp_sensor_ != nullptr) this->right_target_temp_sensor_->publish_state(right_target_temp);
     if (this->right_temp_number_ != nullptr) this->right_temp_number_->publish_state(right_target_temp);
     if (this->right_current_temp_sensor_ != nullptr) this->right_current_temp_sensor_->publish_state(right_actual_temp);
+    
+    // --- NOUVEAU : Publication de la tension ---
+    if (this->voltage_sensor_ != nullptr) {
+        this->voltage_sensor_->publish_state(voltage);
+    }
   }
 }
 
