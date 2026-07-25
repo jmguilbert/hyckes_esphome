@@ -24,7 +24,7 @@ class AlpicoolPowerSwitch;
 class AlpicoolEcoSwitch;
 class AlpicoolTemperatureNumber;
 
-class AlpicoolDevice : public espbt::BLEClientNode, public Component {
+class AlpicoolDevice : public ble_client::BLEClientNode, public Component {
  public:
   void setup() override;
   void dump_config() override;
@@ -64,7 +64,7 @@ class AlpicoolDevice : public espbt::BLEClientNode, public Component {
   uint16_t calculate_checksum_(const uint8_t *data, uint16_t len);
   void publish_connected_(bool connected);
 
-  espbt::ESPBTUUID service_uuid_{espbt::ESPBTUUID::from_uint16(0x1234)};
+  espbt::ESPBTUUID service_uuid_{esp32_ble_tracker::ESPBTUUID::from_uint16(0x1234)};
   espbt::ESPBTUUID write_char_uuid_;
   espbt::ESPBTUUID notify_char_uuid_;
   
