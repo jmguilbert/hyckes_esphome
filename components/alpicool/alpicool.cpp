@@ -12,11 +12,10 @@ static const char *const TAG = "alpicool";
 static uint8_t last_fridge_state[36] = {0};
 static bool state_received = false;
 
-// Mémorisation des canaux (ports) Bluetooth
 static uint16_t handle_1235 = 0;
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (31-BYTE CHUNKED PROTOCOL)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (31-BYTE CHUNKED ULTIMATE)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -121,35 +120,47 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
     memcpy(last_fridge_state, data, 36);
     state_received = true;
 
+    // Décodage des octets de base
     bool is_on = (data[5] == 0x01);
+    bool is_eco = (data[6] == 0x01); // 0 = MAX, 1 = ECO
+    this->battery_protection_level_ = data[7]; // 0 = High, 1 = Med, 2 = Low
+    
     int8_t left_target_temp = static_cast<int8_t>(data[8]);
     int8_t left_actual_temp = static_cast<int8_t>(data[9]);
     
-    // --- NOUVEAU : Récupération de la tension (Octets 20 et 21) ---
+    bool compressor_is_running = (data[11] == 1); // 1 = Tourne, 0 = Arrêt
+    
+    // Tension batterie
     float voltage = data[20] + (data[21] / 10.0);
 
     int8_t right_target_temp = static_cast<int8_t>(data[22]);
     int8_t right_actual_temp = static_cast<int8_t>(data[23]);
 
     this->last_settings_.on = is_on;
+    this->last_settings_.eco_mode = is_eco;
     this->last_settings_.temp_set = left_target_temp;
     this->last_right_settings_.temp_set = right_target_temp;
     
     this->has_settings_ = true;
     this->dual_zone_detected_ = true;
 
-    // Publication des états vers Home Assistant
+    // Publication vers Home Assistant
     if (this->power_switch_ != nullptr) this->power_switch_->publish_state(is_on);
+    if (this->eco_switch_ != nullptr) this->eco_switch_->publish_state(is_eco);
+    
     if (this->left_target_temp_sensor_ != nullptr) this->left_target_temp_sensor_->publish_state(left_target_temp);
     if (this->left_temp_number_ != nullptr) this->left_temp_number_->publish_state(left_target_temp);
     if (this->left_current_temp_sensor_ != nullptr) this->left_current_temp_sensor_->publish_state(left_actual_temp);
+    
     if (this->right_target_temp_sensor_ != nullptr) this->right_target_temp_sensor_->publish_state(right_target_temp);
     if (this->right_temp_number_ != nullptr) this->right_temp_number_->publish_state(right_target_temp);
     if (this->right_current_temp_sensor_ != nullptr) this->right_current_temp_sensor_->publish_state(right_actual_temp);
     
-    // --- NOUVEAU : Publication de la tension ---
+    if (this->running_sensor_ != nullptr) {
+      this->running_sensor_->publish_state(compressor_is_running);
+    }
     if (this->voltage_sensor_ != nullptr) {
-        this->voltage_sensor_->publish_state(voltage);
+      this->voltage_sensor_->publish_state(voltage);
     }
   }
 }
@@ -170,23 +181,22 @@ void AlpicoolDevice::send_set_state_() {
 
   uint8_t cmd[31];
   
-  // 1. Copie des 18 premiers octets (00 à 17)
   memcpy(cmd, last_fridge_state, 18);
-  cmd[2] = 0x1C; // Longueur : 28 octets
-  cmd[3] = 0x02; // Commande d'écriture
+  cmd[2] = 0x1C; // Longueur pour Hyckes : 28 octets de données
+  cmd[3] = 0x02; // Action : Ecrire
   
   cmd[5] = this->last_settings_.on ? 0x01 : 0x00;
+  cmd[6] = this->last_settings_.eco_mode ? 0x01 : 0x00;
+  cmd[7] = this->battery_protection_level_;
   cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
 
-  // 2. L'astuce Hyckes : On saute les 4 octets de tension (18 à 21 de l'état)
-  // et on copie les 8 octets de consigne droite (22 à 29 de l'état)
+  // Hyckes saute les 4 octets de tension pour réduire la trame
   memcpy(&cmd[18], &last_fridge_state[22], 8);
   cmd[18] = static_cast<uint8_t>(this->last_right_settings_.temp_set);
 
-  // 3. On copie les 3 octets de fin de trame (31 à 33 de l'état)
   memcpy(&cmd[26], &last_fridge_state[31], 3);
 
-  // 4. Calcul du checksum final sur les 29 premiers octets
+  // Checksum
   uint16_t checksum_val = this->calculate_checksum_(cmd, 29);
   cmd[29] = (checksum_val >> 8) & 0xFF;
   cmd[30] = checksum_val & 0xFF;
@@ -202,7 +212,6 @@ void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
 
   uint16_t handle = (handle_1235 != 0) ? handle_1235 : this->write_handle_;
 
-  // L'arme secrète : La Fragmentation Manuelle BLE (MTU = 20 max)
   uint16_t offset = 0;
   while (offset < len) {
     uint16_t chunk_size = (len - offset > 20) ? 20 : (len - offset);
@@ -224,7 +233,7 @@ void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
     
     offset += chunk_size;
     if (offset < len) {
-      delay(15); // Petite pause vitale pour laisser la puce Bluetooth digérer le 1er paquet
+      delay(15);
     }
   }
 }
@@ -248,6 +257,7 @@ void AlpicoolDevice::send_power(bool state) {
 void AlpicoolDevice::send_eco(bool state) {
   if (!this->has_settings_) return;
   this->last_settings_.eco_mode = state;
+  this->send_set_state_();
 }
 
 void AlpicoolDevice::send_left_target_temperature(int8_t temp) {
@@ -259,6 +269,12 @@ void AlpicoolDevice::send_left_target_temperature(int8_t temp) {
 void AlpicoolDevice::send_right_target_temperature(int8_t temp) {
   if (!this->has_settings_) return;
   this->last_right_settings_.temp_set = temp;
+  this->send_set_state_();
+}
+
+void AlpicoolDevice::send_battery_protection(uint8_t level) {
+  if (!state_received) return;
+  this->battery_protection_level_ = level;
   this->send_set_state_();
 }
 
