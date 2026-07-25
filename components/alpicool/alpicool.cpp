@@ -12,8 +12,11 @@ static const char *const TAG = "alpicool";
 static uint8_t last_fridge_state[36] = {0};
 static bool state_received = false;
 
+// Mémorisation des canaux (ports) Bluetooth
+static uint16_t handle_1235 = 0;
+
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (20-BYTE PROTOCOL ON PORT 1235)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (31-BYTE CHUNKED PROTOCOL)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -39,7 +42,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     case ESP_GATTC_DISCONNECT_EVT: {
       ESP_LOGW(TAG, "[BLE] Disconnected from Hyckes fridge");
       this->notify_handle_ = 0;
-      this->write_handle_ = 0;
+      handle_1235 = 0;
       this->has_settings_ = false;
       state_received = false;
       this->publish_connected_(false);
@@ -47,22 +50,18 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     }
 
     case ESP_GATTC_SEARCH_CMPL_EVT: {
-      // ON CIBLE LE PORT 1235 EN PRIORITE POUR L'ECRITURE
       this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1235);
       this->notify_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1236);
 
       auto *write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
-      
-      // Fallback au cas où, mais le 1235 doit être présent
-      if (write_chr == nullptr) {
+      if (write_chr != nullptr) {
+        handle_1235 = write_chr->handle;
+      } else {
         this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1237);
         write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
       }
 
-      if (write_chr != nullptr) {
-        this->write_handle_ = write_chr->handle;
-        ESP_LOGI(TAG, "[BLE] Write handle bound to %s", this->write_char_uuid_.to_string().c_str());
-      }
+      if (write_chr != nullptr) this->write_handle_ = write_chr->handle;
 
       auto *notify_chr = this->parent()->get_characteristic(this->service_uuid_, this->notify_char_uuid_);
       if (notify_chr != nullptr) this->notify_handle_ = notify_chr->handle;
@@ -155,46 +154,69 @@ void AlpicoolDevice::send_status_request_() {
 
 void AlpicoolDevice::send_set_state_() {
   if (!state_received) {
-    ESP_LOGW(TAG, "ABORT SEND: No valid baseline frame cloned from fridge yet.");
+    ESP_LOGW(TAG, "ABORT SEND: No baseline frame cloned yet.");
     return;
   }
 
-  uint8_t cmd[20];
+  uint8_t cmd[31];
   
-  // 1. On copie les 18 premiers octets de l'état actuel 
+  // 1. Copie des 18 premiers octets (00 à 17)
   memcpy(cmd, last_fridge_state, 18);
-
-  // 2. On modifie l'entête pour correspondre au format d'écriture officiel de 20 octets
-  cmd[2] = 0x1C; 
-  cmd[3] = 0x02; 
+  cmd[2] = 0x1C; // Longueur : 28 octets
+  cmd[3] = 0x02; // Commande d'écriture
   
-  // 3. On injecte l'état ON/OFF et la consigne de gauche
   cmd[5] = this->last_settings_.on ? 0x01 : 0x00;
   cmd[8] = static_cast<uint8_t>(this->last_settings_.temp_set);
 
-  // 4. On ajoute les 2 octets manquants à la fin (Consigne droite + Temp Actuelle droite)
+  // 2. L'astuce Hyckes : On saute les 4 octets de tension (18 à 21 de l'état)
+  // et on copie les 8 octets de consigne droite (22 à 29 de l'état)
+  memcpy(&cmd[18], &last_fridge_state[22], 8);
   cmd[18] = static_cast<uint8_t>(this->last_right_settings_.temp_set);
-  cmd[19] = last_fridge_state[23]; 
 
-  ESP_LOGI(TAG, "--- SENDING 20-BYTE WRITE COMMAND ---");
-  ESP_LOGI(TAG, "Cmd Hex: %s", format_hex_pretty(cmd, 20).c_str());
+  // 3. On copie les 3 octets de fin de trame (31 à 33 de l'état)
+  memcpy(&cmd[26], &last_fridge_state[31], 3);
 
-  this->send_command_(cmd, 20);
+  // 4. Calcul du checksum final sur les 29 premiers octets
+  uint16_t checksum_val = this->calculate_checksum_(cmd, 29);
+  cmd[29] = (checksum_val >> 8) & 0xFF;
+  cmd[30] = checksum_val & 0xFF;
+
+  ESP_LOGI(TAG, "--- SENDING 31-BYTE WRITE COMMAND (CHUNKED) ---");
+  ESP_LOGI(TAG, "Full Hex: %s", format_hex_pretty(cmd, 31).c_str());
+
+  this->send_command_(cmd, 31);
 }
 
 void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
   if (this->node_state != espbt::ClientState::ESTABLISHED) return;
 
-  auto err = esp_ble_gattc_write_char(
-      this->parent()->get_gattc_if(),
-      this->parent()->get_conn_id(),
-      this->write_handle_,
-      len,
-      const_cast<uint8_t *>(data),
-      ESP_GATT_WRITE_TYPE_NO_RSP,
-      ESP_GATT_AUTH_REQ_NONE);
+  uint16_t handle = (handle_1235 != 0) ? handle_1235 : this->write_handle_;
 
-  if (err != ESP_OK) ESP_LOGW(TAG, "Write failed: %d", err);
+  // L'arme secrète : La Fragmentation Manuelle BLE (MTU = 20 max)
+  uint16_t offset = 0;
+  while (offset < len) {
+    uint16_t chunk_size = (len - offset > 20) ? 20 : (len - offset);
+    
+    auto err = esp_ble_gattc_write_char(
+        this->parent()->get_gattc_if(),
+        this->parent()->get_conn_id(),
+        handle,
+        chunk_size,
+        const_cast<uint8_t *>(data + offset),
+        ESP_GATT_WRITE_TYPE_NO_RSP,
+        ESP_GATT_AUTH_REQ_NONE);
+
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "Write failed at offset %d: %d", offset, err);
+    } else {
+      ESP_LOGD(TAG, "Sent chunk offset %d, size %d", offset, chunk_size);
+    }
+    
+    offset += chunk_size;
+    if (offset < len) {
+      delay(15); // Petite pause vitale pour laisser la puce Bluetooth digérer le 1er paquet
+    }
+  }
 }
 
 uint16_t AlpicoolDevice::calculate_checksum_(const uint8_t *data, uint16_t len) {
