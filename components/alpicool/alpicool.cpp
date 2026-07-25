@@ -11,10 +11,14 @@ static const char *const TAG = "alpicool";
 
 static uint8_t last_fridge_state[36] = {0};
 static bool state_received = false;
-static bool is_paired = false; // Verrou de session OBD/BLE
+static bool is_paired = false; 
+
+// Mémorisation des canaux (ports) Bluetooth
+static uint16_t handle_1235 = 0;
+static uint16_t handle_1237 = 0;
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (SESSION AUTHENTICATION)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (DUAL-CHANNEL ROUTING)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -40,35 +44,43 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     case ESP_GATTC_DISCONNECT_EVT: {
       ESP_LOGW(TAG, "[BLE] Disconnected from Hyckes fridge");
       this->notify_handle_ = 0;
-      this->write_handle_ = 0;
+      handle_1235 = 0;
+      handle_1237 = 0;
       this->has_settings_ = false;
       state_received = false;
-      is_paired = false; // On reverrouille la session en cas de déconnexion
+      is_paired = false; 
       this->publish_connected_(false);
       break;
     }
 
     case ESP_GATTC_SEARCH_CMPL_EVT: {
-      this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1237);
-      this->notify_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1236);
-
-      auto *write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
-      if (write_chr == nullptr) {
-        this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1235);
-        write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
+      // Recherche du canal de commande standard (1235)
+      auto *char_1235 = this->parent()->get_characteristic(this->service_uuid_, espbt::ESPBTUUID::from_uint16(0x1235));
+      if (char_1235 != nullptr) {
+        handle_1235 = char_1235->handle;
+        ESP_LOGI(TAG, "[BLE] Found Command Port (1235)");
       }
 
-      if (write_chr != nullptr) this->write_handle_ = write_chr->handle;
+      // Recherche du canal de sécurité / appairage (1237)
+      auto *char_1237 = this->parent()->get_characteristic(this->service_uuid_, espbt::ESPBTUUID::from_uint16(0x1237));
+      if (char_1237 != nullptr) {
+        handle_1237 = char_1237->handle;
+        ESP_LOGI(TAG, "[BLE] Found Security Port (1237)");
+      }
 
-      auto *notify_chr = this->parent()->get_characteristic(this->service_uuid_, this->notify_char_uuid_);
-      if (notify_chr != nullptr) this->notify_handle_ = notify_chr->handle;
+      // Recherche du canal de notification (1236)
+      auto *notify_chr = this->parent()->get_characteristic(this->service_uuid_, espbt::ESPBTUUID::from_uint16(0x1236));
+      if (notify_chr != nullptr) {
+        this->notify_handle_ = notify_chr->handle;
+        ESP_LOGI(TAG, "[BLE] Found Notify Port (1236)");
+      }
 
-      auto status = esp_ble_gattc_register_for_notify(
-          this->parent()->get_gattc_if(),
-          this->parent()->get_remote_bda(),
-          this->notify_handle_);
-      if (status) {
-        ESP_LOGW(TAG, "[BLE] Failed to register for notifications, status=%d", status);
+      // On s'abonne aux notifications sur 1236 ET 1237 (pour capter la validation APP peu importe le port)
+      if (this->notify_handle_ != 0) {
+        esp_ble_gattc_register_for_notify(this->parent()->get_gattc_if(), this->parent()->get_remote_bda(), this->notify_handle_);
+      }
+      if (handle_1237 != 0) {
+        esp_ble_gattc_register_for_notify(this->parent()->get_gattc_if(), this->parent()->get_remote_bda(), handle_1237);
       }
       break;
     }
@@ -81,28 +93,20 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
       this->node_state = espbt::ClientState::ESTABLISHED;
       this->publish_connected_(true);
       ESP_LOGI(TAG, "[BLE] Ready - notifications registered.");
-      
-      // CONNEXION RÉUSSIE : ON LANCE IMMÉDIATEMENT LE LOGIN SILENCIEUX (0x00)
-      ESP_LOGI(TAG, ">>> SENDING SESSION UNLOCK (LOGIN) COMMAND <<<");
-      uint8_t bind_cmd[6] = {0xFE, 0xFE, 0x03, 0x00, 0x00, 0x00};
-      uint16_t bind_chk = this->calculate_checksum_(bind_cmd, 4);
-      bind_cmd[4] = (bind_chk >> 8) & 0xFF;
-      bind_cmd[5] = bind_chk & 0xFF;
-      this->send_command_(bind_cmd, 6);
       break;
     }
 
     case ESP_GATTC_NOTIFY_EVT: {
-      if (param->notify.handle != this->notify_handle_) break;
-      this->parse_status_response_(param->notify.value, param->notify.value_len);
+      // On accepte les notifications de 1236 et de 1237
+      if (param->notify.handle == this->notify_handle_ || param->notify.handle == handle_1237) {
+        this->parse_status_response_(param->notify.value, param->notify.value_len);
+      }
       break;
     }
 
     case ESP_GATTC_WRITE_CHAR_EVT: {
       if (param->write.status != ESP_GATT_OK) {
         ESP_LOGW(TAG, "[BLE] Write failed, status=%d", param->write.status);
-      } else {
-        ESP_LOGI(TAG, "[BLE] Write successful!");
       }
       break;
     }
@@ -115,16 +119,32 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
 void AlpicoolDevice::update() {
   if (this->node_state != espbt::ClientState::ESTABLISHED) return;
   
-  // Si le frigo n'a pas répondu au login, on relance la demande
+  // Si on n'est pas appairé, on tente le Toc-Toc magique sur le port de sécurité 1237
   if (!is_paired) {
-    ESP_LOGI(TAG, "[BLE] Session not unlocked yet... Retrying LOGIN...");
-    uint8_t bind_cmd[6] = {0xFE, 0xFE, 0x03, 0x00, 0x00, 0x00};
-    uint16_t bind_chk = this->calculate_checksum_(bind_cmd, 4);
-    bind_cmd[4] = (bind_chk >> 8) & 0xFF;
-    bind_cmd[5] = bind_chk & 0xFF;
-    this->send_command_(bind_cmd, 6);
+    static uint32_t last_bind_time = 0;
+    uint32_t now = millis();
+    // Relance toutes les 5 secondes pour ne pas spammer
+    if (now - last_bind_time > 5000) {
+      last_bind_time = now;
+      ESP_LOGI(TAG, ">>> SENDING BIND REQUEST TO 1237: PRESS GEAR BUTTON IF 'APP' FLASHES <<<");
+      uint8_t bind_cmd[6] = {0xFE, 0xFE, 0x03, 0x00, 0x00, 0x00};
+      uint16_t bind_chk = this->calculate_checksum_(bind_cmd, 4);
+      bind_cmd[4] = (bind_chk >> 8) & 0xFF;
+      bind_cmd[5] = bind_chk & 0xFF;
+
+      if (handle_1237 != 0) {
+        esp_ble_gattc_write_char(
+          this->parent()->get_gattc_if(),
+          this->parent()->get_conn_id(),
+          handle_1237,
+          6,
+          bind_cmd,
+          ESP_GATT_WRITE_TYPE_NO_RSP,
+          ESP_GATT_AUTH_REQ_NONE);
+      }
+    }
   } else {
-    // Si la session est ouverte, on demande les températures normalement
+    // Si on est appairé, on lit l'état normalement
     this->send_status_request_();
   }
 }
@@ -137,18 +157,23 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
 
   if (expected_checksum != received_checksum) return;
 
-  // 1. INTERCEPTION DE LA VALIDATION DE SESSION (Code 0x00)
+  // 1. VALIDATION DE L'APPAIRAGE (Le frigo répond 0x00 après l'appui sur l'engrenage)
   if (data[3] == 0x00) {
     ESP_LOGI(TAG, "===============================================");
     ESP_LOGI(TAG, "!!! SESSION DÉVERROUILLÉE PAR LE FRIGO !!!");
     ESP_LOGI(TAG, "===============================================");
     is_paired = true;
-    this->send_status_request_(); // Dès qu'il est déverrouillé, on demande les températures
+    this->send_status_request_(); // On lance la lecture des capteurs
     return;
   }
 
-  // 2. RÉPONSE D'ÉTAT CLASSIQUE (36 octets - Codes 0x01 ou 0x02)
+  // 2. RÉPONSE D'ÉTAT (36 octets)
   if (len == 36 && (data[3] == 0x01 || data[3] == 0x02)) {
+    if (!is_paired) {
+        ESP_LOGI(TAG, "Data received without explicit BIND. Auto-pairing successful.");
+        is_paired = true;
+    }
+
     memcpy(last_fridge_state, data, 36);
     state_received = true;
 
@@ -206,17 +231,20 @@ void AlpicoolDevice::send_set_state_() {
   cmd[34] = (checksum_val >> 8) & 0xFF;
   cmd[35] = checksum_val & 0xFF;
 
-  ESP_LOGI(TAG, "--- SENDING WRITE COMMAND (0x02) ---");
+  ESP_LOGI(TAG, "--- SENDING WRITE COMMAND (0x02) TO 1235 ---");
   this->send_command_(cmd, 36);
 }
 
 void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
   if (this->node_state != espbt::ClientState::ESTABLISHED) return;
 
+  // On route systématiquement les PING (0x01) et les SET (0x02) vers le port de commande 1235 !
+  uint16_t handle = (handle_1235 != 0) ? handle_1235 : this->write_handle_;
+
   auto err = esp_ble_gattc_write_char(
       this->parent()->get_gattc_if(),
       this->parent()->get_conn_id(),
-      this->write_handle_,
+      handle,
       len,
       const_cast<uint8_t *>(data),
       ESP_GATT_WRITE_TYPE_NO_RSP,
