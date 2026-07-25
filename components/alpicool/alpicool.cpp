@@ -13,7 +13,7 @@ static uint8_t last_fridge_state[36] = {0};
 static bool state_received = false;
 
 void AlpicoolDevice::setup() {
-  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (20-BYTE HYBRID PROTOCOL)...");
+  ESP_LOGCONFIG(TAG, "Setting up Hyckes device (20-BYTE PROTOCOL ON PORT 1235)...");
 }
 
 void AlpicoolDevice::dump_config() {
@@ -47,16 +47,22 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     }
 
     case ESP_GATTC_SEARCH_CMPL_EVT: {
-      this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1237);
+      // ON CIBLE LE PORT 1235 EN PRIORITE POUR L'ECRITURE
+      this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1235);
       this->notify_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1236);
 
       auto *write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
+      
+      // Fallback au cas où, mais le 1235 doit être présent
       if (write_chr == nullptr) {
-        this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1235);
+        this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1237);
         write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
       }
 
-      if (write_chr != nullptr) this->write_handle_ = write_chr->handle;
+      if (write_chr != nullptr) {
+        this->write_handle_ = write_chr->handle;
+        ESP_LOGI(TAG, "[BLE] Write handle bound to %s", this->write_char_uuid_.to_string().c_str());
+      }
 
       auto *notify_chr = this->parent()->get_characteristic(this->service_uuid_, this->notify_char_uuid_);
       if (notify_chr != nullptr) this->notify_handle_ = notify_chr->handle;
@@ -153,14 +159,12 @@ void AlpicoolDevice::send_set_state_() {
     return;
   }
 
-  // --- LE SECRET DU HYCKES EST ICI : UNE TRAME CONDENSÉE DE 20 OCTETS SANS CHECKSUM ---
   uint8_t cmd[20];
   
   // 1. On copie les 18 premiers octets de l'état actuel 
-  // Cela inclut la temp actuelle gauche et les modes cachés
   memcpy(cmd, last_fridge_state, 18);
 
-  // 2. On modifie l'entête pour correspondre au format d'écriture officiel capturé
+  // 2. On modifie l'entête pour correspondre au format d'écriture officiel de 20 octets
   cmd[2] = 0x1C; 
   cmd[3] = 0x02; 
   
