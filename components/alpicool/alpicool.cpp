@@ -76,7 +76,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
         ESP_LOGW(TAG, "[BLE] Notification registration failed");
         break;
       }
-      this->node_state = espbt::ClientState::ESTABLISHED;
+      this->node_state = esp32_ble_tracker::ClientState::ESTABLISHED;
       this->publish_connected_(true);
       ESP_LOGI(TAG, "[BLE] Ready - notifications registered.");
       this->send_status_request_();
@@ -104,7 +104,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
 }
 
 void AlpicoolDevice::update() {
-  if (this->node_state != espbt::ClientState::ESTABLISHED) return;
+  if (this->node_state != esp32_ble_tracker::ClientState::ESTABLISHED) return;
   this->send_status_request_();
 }
 
@@ -208,7 +208,7 @@ void AlpicoolDevice::send_set_state_() {
 }
 
 void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
-  if (this->node_state != espbt::ClientState::ESTABLISHED) return;
+  if (this->node_state != esp32_ble_tracker::ClientState::ESTABLISHED) return;
 
   uint16_t handle = (handle_1235 != 0) ? handle_1235 : this->write_handle_;
 
