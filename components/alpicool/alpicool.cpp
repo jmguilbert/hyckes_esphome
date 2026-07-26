@@ -208,7 +208,7 @@ void AlpicoolDevice::send_set_state_() {
 }
 
 void AlpicoolDevice::send_command_(const uint8_t *data, uint16_t len) {
-  if (this->node_state != espbt::ClientState::ESTABLISHED) return;
+  if (this->node_state != ble_client::ClientState::ESTABLISHED) return;
 
   uint16_t handle = (handle_1235 != 0) ? handle_1235 : this->write_handle_;
 
