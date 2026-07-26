@@ -126,15 +126,15 @@ void AlpicoolDevice::parse_status_response_(const uint8_t *data, uint16_t len) {
     this->battery_protection_level_ = data[7]; // 0 = High, 1 = Med, 2 = Low
     
     int8_t left_target_temp = static_cast<int8_t>(data[8]);
-    int8_t left_actual_temp = static_cast<int8_t>(data[9]);
+    int8_t left_actual_temp = static_cast<int8_t>(data[18]);
     
-    bool compressor_is_running = (data[11] == 1); // 1 = Tourne, 0 = Arrêt
+    bool compressor_is_running = (data[31] == 1); // 1 = Tourne, 0 = Arrêt
     
     // Tension batterie
     float voltage = data[20] + (data[21] / 10.0);
 
     int8_t right_target_temp = static_cast<int8_t>(data[22]);
-    int8_t right_actual_temp = static_cast<int8_t>(data[23]);
+    int8_t right_actual_temp = static_cast<int8_t>(data[30]);
 
     this->last_settings_.on = is_on;
     this->last_settings_.eco_mode = is_eco;
