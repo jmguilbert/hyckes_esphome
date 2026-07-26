@@ -49,14 +49,14 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
     }
 
     case ESP_GATTC_SEARCH_CMPL_EVT: {
-      this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1235);
-      this->notify_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1236);
+      this->write_char_uuid_ = esp32_ble_tracker::ESPBTUUID::from_uint16(0x1235);
+      this->notify_char_uuid_ = esp32_ble_tracker::ESPBTUUID::from_uint16(0x1236);
 
       auto *write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
       if (write_chr != nullptr) {
         handle_1235 = write_chr->handle;
       } else {
-        this->write_char_uuid_ = espbt::ESPBTUUID::from_uint16(0x1237);
+        this->write_char_uuid_ = esp32_ble_tracker::ESPBTUUID::from_uint16(0x1237);
         write_chr = this->parent()->get_characteristic(this->service_uuid_, this->write_char_uuid_);
       }
 
@@ -76,7 +76,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
         ESP_LOGW(TAG, "[BLE] Notification registration failed");
         break;
       }
-      this->node_state = espbt::ClientState::ESTABLISHED;
+      this->node_state = ble_client::ClientState::ESTABLISHED;
       this->publish_connected_(true);
       ESP_LOGI(TAG, "[BLE] Ready - notifications registered.");
       this->send_status_request_();
@@ -104,7 +104,7 @@ void AlpicoolDevice::gattc_event_handler(esp_gattc_cb_event_t event,
 }
 
 void AlpicoolDevice::update() {
-  if (this->node_state != espbt::ClientState::ESTABLISHED) return;
+  if (this->node_state != ble_client::ClientState::ESTABLISHED) return;
   this->send_status_request_();
 }
 
