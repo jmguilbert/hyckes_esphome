@@ -1,19 +1,14 @@
-Attention projet non fonctionnel. En cours de développement.
+# Hyckes Hyfridge ESPHome Component
 
-# Hyfridge ESPHome Component
-
-An ESPHome custom component for controlling Alpicool portable fridges via BLE (Bluetooth Low Energy). Integrates directly with Home Assistant through ESPHome's native API -- no MQTT broker required.
+An ESPHome custom component for controlling Hyfridge fridges for camper via BLE (Bluetooth Low Energy). Integrates directly with Home Assistant through ESPHome's native API -- no MQTT broker required.
 
 Supports both **single-zone** and **dual-zone** Alpicool fridges with automatic detection.
 
 ## Supported Devices
 
-Alpicool fridges that advertise via BLE with names matching these patterns:
+Hyckes fridges that advertise via BLE with names matching these patterns:
 
 - `A1-*`
-- `AK1-*`
-- `AK2-*`
-- `AK3-*`
 
 Both single-zone (e.g., K25) and dual-zone models are supported. The component auto-detects the fridge type from the BLE response -- no manual configuration needed.
 
