@@ -24,7 +24,7 @@ class AlpicoolPowerSwitch;
 class AlpicoolEcoSwitch;
 class AlpicoolTemperatureNumber;
 
-class AlpicoolDevice : public ble_client::BLEClientNode, public Component {
+class AlpicoolDevice : public ble_client::BLEClientNode, public PollingComponent {
  public:
   void setup() override;
   void dump_config() override;
