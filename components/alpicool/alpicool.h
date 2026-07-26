@@ -35,16 +35,16 @@ class AlpicoolDevice : public ble_client::BLEClientNode, public PollingComponent
 
   void set_power_switch(switch_::Switch *power_switch) { this->power_switch_ = power_switch; }
   void set_eco_switch(switch_::Switch *eco_switch) { this->eco_switch_ = eco_switch; }
-  void set_left_temp_number(number::Number *left_temp_number) { this->left_temp_number_ = left_temp_number; }
-  void set_right_temp_number(number::Number *right_temp_number) { this->right_temp_number_ = right_temp_number; }
+  void set_temperature_number(number::Number *left_temp_number) { this->left_temp_number_ = left_temp_number; }
+  void set_right_temperature_number(number::Number *right_temp_number) { this->right_temp_number_ = right_temp_number; }
   
-  void set_left_current_temp_sensor(sensor::Sensor *sensor) { this->left_current_temp_sensor_ = sensor; }
-  void set_left_target_temp_sensor(sensor::Sensor *sensor) { this->left_target_temp_sensor_ = sensor; }
-  void set_right_current_temp_sensor(sensor::Sensor *sensor) { this->right_current_temp_sensor_ = sensor; }
-  void set_right_target_temp_sensor(sensor::Sensor *sensor) { this->right_target_temp_sensor_ = sensor; }
+  void set_current_temperature_sensor(sensor::Sensor *sensor) { this->left_current_temp_sensor_ = sensor; }
+  void set_target_temperature_sensor(sensor::Sensor *sensor) { this->left_target_temp_sensor_ = sensor; }
+  void set_right_current_temperature_sensor(sensor::Sensor *sensor) { this->right_current_temp_sensor_ = sensor; }
+  void set_right_target_temperature_sensor(sensor::Sensor *sensor) { this->right_target_temp_sensor_ = sensor; }
   void set_voltage_sensor(sensor::Sensor *sensor) { this->voltage_sensor_ = sensor; }
-  void set_connected_sensor(binary_sensor::BinarySensor *sensor) { this->connected_sensor_ = sensor; }
-  void set_running_sensor(binary_sensor::BinarySensor *sensor) { this->running_sensor_ = sensor; }
+  void set_connected_binary_sensor(binary_sensor::BinarySensor *sensor) { this->connected_sensor_ = sensor; }
+  void set_running_binary_sensor(binary_sensor::BinarySensor *sensor) { this->running_sensor_ = sensor; }
 
   void send_power(bool state);
   void send_eco(bool state);
