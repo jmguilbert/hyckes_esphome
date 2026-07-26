@@ -64,9 +64,9 @@ class AlpicoolDevice : public ble_client::BLEClientNode, public Component {
   uint16_t calculate_checksum_(const uint8_t *data, uint16_t len);
   void publish_connected_(bool connected);
 
-  espbt::ESPBTUUID service_uuid_{esp32_ble_tracker::ESPBTUUID::from_uint16(0x1234)};
-  espbt::ESPBTUUID write_char_uuid_;
-  espbt::ESPBTUUID notify_char_uuid_;
+  esp32_ble_tracker::ESPBTUUID service_uuid_{esp32_ble_tracker::ESPBTUUID::from_uint16(0x1234)};
+  esp32_ble_tracker::ESPBTUUID write_char_uuid_;
+  esp32_ble_tracker::ESPBTUUID notify_char_uuid_;
   
   uint16_t write_handle_{0};
   uint16_t notify_handle_{0};
