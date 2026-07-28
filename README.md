@@ -78,9 +78,9 @@ esp32:
   board: nodemcu-32s    # or: esp32-c3-devkitm-1, esp-wrover-kit, etc.
   framework:
     type: esp-idf
-
-### Project stucture
-
+```
+### Project Structure
+```text
 hyckes_esphome/
 ├── hyckesv3.yaml              # ESPHome device configuration
 ├── README.md
@@ -94,38 +94,4 @@ hyckes_esphome/
         ├── select.py          # Select platform (Battery protection)
         ├── alpicool.h         # C++ header (esp32_ble_tracker framework)
         └── alpicool.cpp       # C++ implementation (Chunked payload logic)
-
-### How It Works (Hyckes Reverse-Engineering)
-The ESP32 connects to the fridge via BLE using the configured MAC address.
-It operates as a PollingComponent, sending a status request command (0x01) over BLE characteristic 0x1235 every 2 seconds.
-The fridge responds via BLE notifications on characteristic 0x1236 with a 36-byte status packet.
-The component parses the response. Notable reverse-engineered byte mappings for Hyckes:
-Byte 7: Battery Protection Level (0=High, 1=Med, 2=Low)
-Byte 18: Actual Left Zone Temperature (Main Fridge)
-Byte 30: Actual Right Zone Temperature (Freezer)
-Byte 31: Compressor State (1=Running, 0=Idle)
-To change a setting, the component clones the latest 36-byte state, alters the required bits, and sends a 31-byte write command (0x02), chunked automatically by ESPHome to bypass BLE size limits.
-Dual-Zone Detection
-The component automatically detects dual-zone fridges. The dual_zone_detected_ flag triggers true upon successfully parsing the 36-byte payload.
-
-### Service/Characteristic,UUID
-Service,00001234-0000-1000-8000-00805f9b34fb
-Write,00001235-0000-1000-8000-00805f9b34fb
-Notify,00001236-0000-1000-8000-00805f9b34fb
-
-Acknowledgments
-jakub-hajek/alpicool-esp32-mqtt -- Original ESP32 MQTT implementation
-johnelliott/alpicoold -- Go implementation with protocol analysis
-Gruni22/alpicool_ha_ble -- Python Home Assistant BLE integration
-
-Et l'aide de Gemini.
-
-License MIT
-###########################################################################
-###########################################################################
-Composant ESPHome pour Réfrigérateur Hyckes (Version Française)
-Un composant personnalisé ESPHome permettant de contrôler les réfrigérateurs Hyckes pour camping-cars via BLE (Bluetooth Low Energy), basé sur le protocole Alpicool. S'intègre directement à Home Assistant grâce à l'API native d'ESPHome -- aucun broker MQTT n'est requis.
-
-Ceci est une adaptation du grand travail réalisé par https://github.com/jakub-hajek/alpicool_esphome pour les refrigérateurs Alpicool.
-J'ai adapté avec l'aide de Gemini le projet en capturant les trames spécifiques à mon refrigérateur de marque Hyckes.
-Les refrigérateurs de marques Alpicool, NomadicArk et autres (elles semblent nombreuses) fonctionnent tous un peu sur le même principe.
+```
