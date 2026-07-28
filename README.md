@@ -1,16 +1,16 @@
 # Hyckes Hyfridge ESPHome Component
 
-An ESPHome custom component for controlling Hyfridge fridges for camper via BLE (Bluetooth Low Energy). Integrates directly with Home Assistant through ESPHome's native API -- no MQTT broker required.
+An ESPHome custom component for controlling Hyckes fridges for campers via BLE (Bluetooth Low Energy), based on the Alpicool protocol. Integrates directly with Home Assistant through ESPHome's native API -- no MQTT broker required.
 
-Supports both **single-zone** and **dual-zone** Alpicool fridges with automatic detection.
+Supports both **single-zone** and **dual-zone** Hyckes fridges (e.g., HyFridge 85) with automatic detection.
 
 ## Supported Devices
 
 Hyckes fridges that advertise via BLE with names matching these patterns:
-
 - `A1-*`
+- Other Alpicool-based OEM variants.
 
-Both single-zone (e.g., K25) and dual-zone models are supported. The component auto-detects the fridge type from the BLE response -- no manual configuration needed.
+Both single-zone and dual-zone models are supported. The component auto-detects the fridge type from the BLE response -- no manual configuration needed.
 
 ## Exposed Entities
 
@@ -18,24 +18,23 @@ Both single-zone (e.g., K25) and dual-zone models are supported. The component a
 
 | Entity | Type | Description |
 |--------|------|-------------|
-| Current Temperature | Sensor | Actual temperature inside the fridge (°C) |
-| Target Temperature | Sensor | Current temperature setpoint (°C, read-only) |
+| Current Temperature | Sensor | Actual temperature inside the main fridge zone (°C) |
+| Target Temperature | Number (Proxy) | Adjust target temperature (+2.0 to +10.0°C) |
 | Input Voltage | Sensor | Power supply voltage (V) |
+| Battery Protection | Select | Battery cut-off level (High, Medium, Low) |
 | Connected | Binary Sensor | BLE connection status |
 | Power | Switch | Turn the fridge on/off |
-| Eco Mode | Switch | Toggle eco (low-power) mode |
-| Set Temperature | Number | Adjust target temperature (-20 to +20°C) |
+| Eco Mode | Switch | Toggle eco mode (low-power/night mode) vs Max |
 
 ### Dual-Zone Only
 
 | Entity | Type | Description |
 |--------|------|-------------|
-| Right Current Temperature | Sensor | Actual temperature in the right zone (°C) |
-| Right Target Temperature | Sensor | Current setpoint for the right zone (°C, read-only) |
-| Set Right Temperature | Number | Adjust right zone target temperature (-20 to +20°C) |
+| Right Current Temperature | Sensor | Actual temperature in the freezer/right zone (°C) |
+| Set Right Temperature | Number (Proxy) | Adjust right zone target temperature (-18.0 to -12.0°C) |
 | Compressor Running | Binary Sensor | Whether the compressor is currently active |
 
-Dual-zone entities will simply not receive updates if your fridge is single-zone.
+*Note: Raw internal setpoint entities are hidden in Home Assistant by default (`internal: true`). The exposed Number entities act as proxies with defined min/max limits for a safer UI.*
 
 ## Prerequisites
 
@@ -53,37 +52,22 @@ Dual-zone entities will simply not receive updates if your fridge is single-zone
 ## Installation
 
 ### Step 1: Create Your Project
-In Esphome builder, create a new project.
-Copy the .yaml file.
-Adapt the MAC adress of your Hyckes fridge.
+In the ESPHome dashboard, create a new project.
+Copy the provided `.yaml` file.
+Adapt the MAC address of your Hyckes fridge in the `substitutions` block.
 
-
-**Published topics (automatic):**
+**Published topics (Optional MQTT):**
+*(MQTT can be enabled by uncommenting the MQTT block in the YAML file. The native API will continue to work alongside it).*
 
 | Topic | Payload | Description |
 |-------|---------|-------------|
 | `alpicool/sensor/current_temperature/state` | `5` | Current temperature (°C) |
-| `alpicool/sensor/target_temperature/state` | `-2` | Target temperature (°C) |
 | `alpicool/sensor/input_voltage/state` | `12.4` | Input voltage (V) |
-| `alpicool/sensor/right_current_temperature/state` | `3` | Right zone temp (dual-zone) |
-| `alpicool/sensor/right_target_temperature/state` | `0` | Right zone target (dual-zone) |
+| `alpicool/sensor/right_current_temperature/state` | `-15` | Right zone temp (dual-zone) |
 | `alpicool/binary_sensor/connected/state` | `ON` | BLE connection status |
 | `alpicool/binary_sensor/compressor_running/state` | `ON` | Compressor status (dual-zone) |
 | `alpicool/switch/power/state` | `ON` | Power state |
 | `alpicool/switch/eco_mode/state` | `OFF` | Eco mode state |
-| `alpicool/number/set_temperature/state` | `-2` | Current setpoint |
-| `alpicool/number/set_right_temperature/state` | `0` | Right zone setpoint (dual-zone) |
-| `alpicool/status` | `online` | Device availability (LWT) |
-
-**Command topics (from the `on_message` handlers):**
-
-| Topic | Payload | Description |
-|-------|---------|-------------|
-| `alpicool/cmd/power` | `ON` / `OFF` | Turn fridge on or off |
-| `alpicool/cmd/eco` | `ON` / `OFF` | Toggle eco mode |
-| `alpicool/cmd/set_temperature` | `-5` | Set left/single-zone target (°C) |
-| `alpicool/cmd/set_right_temperature` | `2` | Set right zone target (°C, dual-zone) |
-
 
 ### Changing the ESP32 Board
 
@@ -94,79 +78,53 @@ esp32:
   board: nodemcu-32s    # or: esp32-c3-devkitm-1, esp-wrover-kit, etc.
   framework:
     type: esp-idf
-```
 
-## Project Structure
-
-### Repository (GitHub)
-
-```
-alpicool_esphome/
-├── hyckes.yaml              # Example ESPHome device configuration
-├── secrets.yaml.example       # Template for WiFi/API credentials
+## Project structure
+hyckes_esphome/
+├── hyckesv3.yaml              # ESPHome device configuration
 ├── README.md
 └── components/
-    └── alpicool/              # Custom component (fetched automatically by ESPHome)
-        ├── __init__.py        # Component hub (BLE client node registration)
-        ├── sensor.py          # Sensor platform (temperatures, voltage)
-        ├── binary_sensor.py   # Binary sensor platform (connected, running)
-        ├── switch.py          # Switch platform (power, eco mode)
-        ├── number.py          # Number platform (target temperature controls)
-        ├── alpicool.h         # C++ header (protocol structs, class definition)
-        └── alpicool.cpp       # C++ implementation (BLE communication, parsing)
-```
+    └── alpicool/              # Custom component (fetched automatically)
+        ├── __init__.py        # Component hub
+        ├── sensor.py          # Sensor platform
+        ├── binary_sensor.py   # Binary sensor platform
+        ├── switch.py          # Switch platform
+        ├── number.py          # Number platform
+        ├── select.py          # Select platform (Battery protection)
+        ├── alpicool.h         # C++ header (esp32_ble_tracker framework)
+        └── alpicool.cpp       # C++ implementation (Chunked payload logic)
 
-### Your Local Setup
+## How It Works (Hyckes Reverse-Engineering)
+The ESP32 connects to the fridge via BLE using the configured MAC address.
+It operates as a PollingComponent, sending a status request command (0x01) over BLE characteristic 0x1235 every 2 seconds.
+The fridge responds via BLE notifications on characteristic 0x1236 with a 36-byte status packet.
+The component parses the response. Notable reverse-engineered byte mappings for Hyckes:
+Byte 7: Battery Protection Level (0=High, 1=Med, 2=Low)
+Byte 18: Actual Left Zone Temperature (Main Fridge)
+Byte 30: Actual Right Zone Temperature (Freezer)
+Byte 31: Compressor State (1=Running, 0=Idle)
+To change a setting, the component clones the latest 36-byte state, alters the required bits, and sends a 31-byte write command (0x02), chunked automatically by ESPHome to bypass BLE size limits.
+Dual-Zone Detection
+The component automatically detects dual-zone fridges. The dual_zone_detected_ flag triggers true upon successfully parsing the 36-byte payload.
 
-You only need two files locally. The component is downloaded from GitHub automatically during compilation:
+## Service/Characteristic,UUID
+Service,00001234-0000-1000-8000-00805f9b34fb
+Write,00001235-0000-1000-8000-00805f9b34fb
+Notify,00001236-0000-1000-8000-00805f9b34fb
 
-```
-your-project/
-├── alpicool.yaml              # Your device configuration
-└── secrets.yaml               # Your credentials (not committed)
-```
+Acknowledgments
+jakub-hajek/alpicool-esp32-mqtt -- Original ESP32 MQTT implementation
+johnelliott/alpicoold -- Go implementation with protocol analysis
+Gruni22/alpicool_ha_ble -- Python Home Assistant BLE integration
 
-## How It Works
+Et l'aide de Gemini.
 
-1. The ESP32 connects to the fridge via BLE using the configured MAC address.
-2. Every 2 seconds, it sends a status request command (`0x01`) over BLE characteristic `0x1235`.
-3. The fridge responds via BLE notifications on characteristic `0x1236` with a status packet containing all sensor data and settings.
-4. The component parses the response and publishes values to Home Assistant via ESPHome's native API.
-5. When you change a setting (power, eco, temperature) in Home Assistant, the corresponding BLE command is sent to the fridge.
+License MIT
+###########################################################################
+###########################################################################
+Composant ESPHome pour Réfrigérateur Hyckes (Version Française)
+Un composant personnalisé ESPHome permettant de contrôler les réfrigérateurs Hyckes pour camping-cars via BLE (Bluetooth Low Energy), basé sur le protocole Alpicool. S'intègre directement à Home Assistant grâce à l'API native d'ESPHome -- aucun broker MQTT n'est requis.
 
-### Dual-Zone Detection
-
-The component automatically detects dual-zone fridges based on the status response length:
-- **Single-zone**: 24-byte response
-- **Dual-zone**: 32+ byte response (contains additional right-zone data)
-
-No configuration flag is needed. The first status response determines the fridge type, and a log message confirms detection:
-
-```
-[I][alpicool:] Dual-zone fridge detected (response length: 37 bytes)
-```
-
-### BLE Protocol
-
-| Service/Characteristic | UUID |
-|------------------------|------|
-| Service | `00001234-0000-1000-8000-00805f9b34fb` |
-| Write | `00001235-0000-1000-8000-00805f9b34fb` |
-| Notify | `00001236-0000-1000-8000-00805f9b34fb` |
-
-Commands:
-- `0x01` -- Status request/response
-- `0x02` -- Set full state (power, eco, all settings)
-- `0x05` -- Set left/single-zone target temperature
-- `0x06` -- Set right zone target temperature (dual-zone only)
-
-## Acknowledgments
-
-- [jakub-hajek/alpicool-esp32-mqtt](https://github.com/jakub-hajek/alpicool-esp32-mqtt) -- Original ESP32 MQTT implementation (single-zone protocol reference)
-- [johnelliott/alpicoold](https://github.com/johnelliott/alpicoold) -- Go implementation with protocol analysis
-- [Gruni22/alpicool_ha_ble](https://github.com/Gruni22/alpicool_ha_ble) -- Python Home Assistant BLE integration (dual-zone protocol reference)
-- [Hazelmeow/AlpicoolFridgeMonitor](https://github.com/Hazelmeow/AlpicoolFridgeMonitor) -- Python BLE monitor (dual-zone struct layouts)
-
-## License
-
-MIT
+Ceci est une adaptation du grand travail réalisé par https://github.com/jakub-hajek/alpicool_esphome pour les refrigérateurs Alpicool.
+J'ai adapté avec l'aide de Gemini le projet en capturant les trames spécifiques à mon refrigérateur de marque Hyckes.
+Les refrigérateurs de marques Alpicool, NomadicArk et autres (elles semblent nombreuses) fonctionnent tous un peu sur le même principe.
