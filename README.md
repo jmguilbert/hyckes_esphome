@@ -79,7 +79,8 @@ esp32:
   framework:
     type: esp-idf
 
-### Project structure
+### Project stucture
+
 hyckes_esphome/
 ├── hyckesv3.yaml              # ESPHome device configuration
 ├── README.md
