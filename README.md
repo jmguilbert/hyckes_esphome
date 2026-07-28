@@ -79,7 +79,7 @@ esp32:
   framework:
     type: esp-idf
 
-## Project structure
+### Project structure
 hyckes_esphome/
 ├── hyckesv3.yaml              # ESPHome device configuration
 ├── README.md
@@ -94,7 +94,7 @@ hyckes_esphome/
         ├── alpicool.h         # C++ header (esp32_ble_tracker framework)
         └── alpicool.cpp       # C++ implementation (Chunked payload logic)
 
-## How It Works (Hyckes Reverse-Engineering)
+### How It Works (Hyckes Reverse-Engineering)
 The ESP32 connects to the fridge via BLE using the configured MAC address.
 It operates as a PollingComponent, sending a status request command (0x01) over BLE characteristic 0x1235 every 2 seconds.
 The fridge responds via BLE notifications on characteristic 0x1236 with a 36-byte status packet.
@@ -107,7 +107,7 @@ To change a setting, the component clones the latest 36-byte state, alters the r
 Dual-Zone Detection
 The component automatically detects dual-zone fridges. The dual_zone_detected_ flag triggers true upon successfully parsing the 36-byte payload.
 
-## Service/Characteristic,UUID
+### Service/Characteristic,UUID
 Service,00001234-0000-1000-8000-00805f9b34fb
 Write,00001235-0000-1000-8000-00805f9b34fb
 Notify,00001236-0000-1000-8000-00805f9b34fb
