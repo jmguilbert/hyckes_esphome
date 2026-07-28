@@ -95,3 +95,20 @@ hyckes_esphome/
         ├── alpicool.h         # C++ header (esp32_ble_tracker framework)
         └── alpicool.cpp       # C++ implementation (Chunked payload logic)
 ```
+### Service/Characteristic,UUID
+| rôle | UUID |
+|---------|----------------------------------------|
+| Service | 00001234-0000-1000-8000-00805f9b34fb |
+| Write | 00001235-0000-1000-8000-00805f9b34fb |
+| Notify | 00001236-0000-1000-8000-00805f9b34fb |
+
+## Acknowledgments
+
+- [jakub-hajek/alpicool-esp32-mqtt](https://github.com/jakub-hajek/alpicool-esp32-mqtt) -- Original ESP32 MQTT implementation (single-zone protocol reference)
+- [johnelliott/alpicoold](https://github.com/johnelliott/alpicoold) -- Go implementation with protocol analysis
+- [Gruni22/alpicool_ha_ble](https://github.com/Gruni22/alpicool_ha_ble) -- Python Home Assistant BLE integration (dual-zone protocol reference)
+- [Hazelmeow/AlpicoolFridgeMonitor](https://github.com/Hazelmeow/AlpicoolFridgeMonitor) -- Python BLE monitor (dual-zone struct layouts)
+- And the super help of Gemini
+
+## License
+MIT
